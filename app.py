@@ -31,37 +31,34 @@ except ImportError:
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="CourtIQ Pro | Tennis Analytics, ML & Video Lab", page_icon="🎾", layout="wide")
 
-# --- CUSTOM STYLING ---
+# --- CUSTOM STYLING (HIGH-CONTRAST READABILITY IN BOTH LIGHT & DARK MODE) ---
 st.markdown("""
 <style>
-    .coach-card {
-        background-color: #161b22;
-        border-left: 5px solid #2ecc71;
-        padding: 18px;
-        border-radius: 8px;
-        margin-bottom: 15px;
+    .coach-card, .loss-card, .wall-card, .video-card {
+        background-color: #161b22 !important;
+        color: #f0f6fc !important;
+        padding: 20px;
+        border-radius: 10px;
+        margin-bottom: 16px;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+        font-size: 1.02rem;
+        line-height: 1.55;
     }
-    .loss-card {
-        background-color: #161b22;
-        border-left: 5px solid #e74c3c;
-        padding: 18px;
-        border-radius: 8px;
-        margin-bottom: 15px;
+    .coach-card h4, .loss-card h4, .wall-card h4, .video-card h4 {
+        color: #ffffff !important;
+        margin-top: 0;
+        margin-bottom: 10px;
+        font-size: 1.15rem;
     }
-    .wall-card {
-        background-color: #161b22;
-        border-left: 5px solid #3498db;
-        padding: 18px;
-        border-radius: 8px;
-        margin-bottom: 15px;
+    .coach-card p, .loss-card p, .wall-card p, .video-card p,
+    .coach-card b, .loss-card b, .wall-card b, .video-card b,
+    .coach-card i, .loss-card i, .wall-card i, .video-card i {
+        color: #f0f6fc !important;
     }
-    .video-card {
-        background-color: #161b22;
-        border-left: 5px solid #9b59b6;
-        padding: 18px;
-        border-radius: 8px;
-        margin-bottom: 15px;
-    }
+    .coach-card { border-left: 6px solid #2ecc71; }
+    .loss-card  { border-left: 6px solid #e74c3c; }
+    .wall-card  { border-left: 6px solid #3498db; }
+    .video-card { border-left: 6px solid #9b59b6; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -95,6 +92,12 @@ def load_data():
         return df, df, []
 
     raw_db_cols = list(df.columns)
+
+    # Normalize opponent column name so UI works seamlessly whether DB uses opponent_name or opponent
+    if "opponent_name" in df.columns and "opponent" not in df.columns:
+        df["opponent"] = df["opponent_name"].fillna("Unknown")
+    elif "opponent" in df.columns and "opponent_name" not in df.columns:
+        df["opponent_name"] = df["opponent"].fillna("Unknown")
 
     if "match_date" in df.columns:
         df["match_date"] = pd.to_datetime(df["match_date"], errors="coerce")
@@ -143,21 +146,33 @@ def load_data():
     return manual_df, video_df, raw_db_cols
 
 def get_table_columns(existing_cols: list):
-    """Ensures we know the exact Supabase columns even if the table starts empty."""
     if existing_cols:
         return existing_cols
-    return ["match_date", "match_type", "surface", "opponent", "result", "score", "serve_rating", "mental_focus", "energy_level", "tactical_note"]
+    return ["match_date", "opponent_name", "match_type", "surface", "result", "score", "serve_rating", "mental_focus", "energy_level", "tactical_note"]
+
+def prepare_db_record(record: dict, valid_cols: list):
+    """Maps opponent/opponent_name, enforces non-null defaults, and strips unknown columns."""
+    rec = record.copy()
+    opp_val = str(rec.get("opponent_name") or rec.get("opponent") or "Unknown").strip()
+    if not opp_val or opp_val.lower() == "nan":
+        opp_val = "Unknown"
+    rec["opponent_name"] = opp_val
+    rec["opponent"] = opp_val
+
+    clean_record = {}
+    for k in valid_cols:
+        if k in rec and rec[k] is not None:
+            clean_record[k] = rec[k]
+    return clean_record
 
 def insert_match(record: dict, existing_cols: list):
     valid_cols = get_table_columns(existing_cols)
-    clean_record = {k: v for k, v in record.items() if k in valid_cols and v is not None}
+    clean_record = prepare_db_record(record, valid_cols)
     supabase.table("personal_matches").insert(clean_record).execute()
 
 def bulk_insert_matches(records: list, existing_cols: list):
     valid_cols = get_table_columns(existing_cols)
-    clean_records = []
-    for rec in records:
-        clean_records.append({k: v for k, v in rec.items() if k in valid_cols and v is not None})
+    clean_records = [prepare_db_record(rec, valid_cols) for rec in records]
     if clean_records:
         supabase.table("personal_matches").insert(clean_records).execute()
 
@@ -820,6 +835,7 @@ with tab4:
                                 "match_date": str(video_date),
                                 "match_type": "Video Biomechanics",
                                 "surface": "Video Footage",
+                                "opponent_name": uploaded_video.name,
                                 "opponent": uploaded_video.name,
                                 "result": "Video Analysis",
                                 "score": f"{cv_res['duration_sec']}s clip" if cv_res else "Video Clip",
@@ -954,12 +970,14 @@ with tab5:
             human_summary = f"[{opp_style} | {pressure}{aw_tag} | Weapon: {main_weapon} | Leak: {main_leak}] " + " // ".join(narrative_parts)
 
             encoded_note = f"[META:{json.dumps(meta_payload)}] {human_summary}".strip()
+            opp_clean = opponent.strip() if opponent.strip() else ("Wall" if match_type == "Wall Session" else "Practice")
 
             new_record = {
                 "match_date": str(session_date),
                 "match_type": match_type,
                 "surface": surface,
-                "opponent": opponent if opponent else "Wall",
+                "opponent_name": opp_clean,
+                "opponent": opp_clean,
                 "result": result,
                 "score": score,
                 "serve_rating": serve_rating,
@@ -987,12 +1005,11 @@ with tab6:
 
             if st.button(f"💾 Save All {len(imp_df)} Rows Permanently to Supabase", use_container_width=True):
                 with st.spinner("Saving every row and extra CSV column permanently to Supabase..."):
-                    # Flexible column alias mapping so any CSV header structure imports cleanly
                     col_aliases = {
                         "match_date": ["match_date", "date", "fecha", "session_date", "day"],
                         "match_type": ["match_type", "type", "session_type", "tipo", "category"],
                         "surface": ["surface", "superficie", "court", "cancha"],
-                        "opponent": ["opponent", "rival", "oponente", "player", "focus", "partner"],
+                        "opponent_name": ["opponent_name", "opponent", "rival", "oponente", "player", "focus", "partner"],
                         "result": ["result", "outcome", "resultado", "w_l", "win_loss"],
                         "score": ["score", "marcador", "duration", "duracion", "time"],
                         "serve_rating": ["serve_rating", "serve", "saque", "stroke_rating", "overall"],
@@ -1001,7 +1018,6 @@ with tab6:
                         note_col: [note_col, "tactical_note", "tactical_notes", "notes", "note", "notas", "comments", "description", "clean_note"]
                     }
 
-                    # Reverse lookup: csv_col_lower -> canonical_col
                     alias_lookup = {}
                     for canon, aliases in col_aliases.items():
                         for a in aliases:
@@ -1013,6 +1029,7 @@ with tab6:
                             "match_date": str(date.today()),
                             "match_type": "Singles Match",
                             "surface": "Hard",
+                            "opponent_name": "Unknown",
                             "opponent": "Unknown",
                             "result": "N/A (Training)",
                             "score": "",
@@ -1037,18 +1054,21 @@ with tab6:
                                 num_val = pd.to_numeric(val, errors="coerce")
                                 if pd.notna(num_val):
                                     base_rec[mapped] = int(round(np.clip(num_val, 1, 10)))
+                            elif mapped == "opponent_name":
+                                clean_opp = str(val).strip()
+                                if clean_opp and clean_opp.lower() != "nan":
+                                    base_rec["opponent_name"] = clean_opp
+                                    base_rec["opponent"] = clean_opp
                             elif mapped == note_col:
                                 raw_note_text = str(val).strip()
                             elif mapped in base_rec:
                                 base_rec[mapped] = str(val).strip()
                             else:
-                                # Preserve EVERY extra CSV column inside META JSON so zero data is lost
                                 if isinstance(val, (np.integer, np.floating)):
                                     extra_meta[orig_col] = float(val) if isinstance(val, np.floating) else int(val)
                                 else:
                                     extra_meta[orig_col] = str(val).strip()
 
-                        # If raw_note_text already had [META:...], merge it cleanly
                         existing_meta, clean_body = parse_rich_note(raw_note_text)
                         merged_meta = {**existing_meta, **extra_meta}
 
