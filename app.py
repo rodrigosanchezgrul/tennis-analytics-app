@@ -68,8 +68,8 @@ st.markdown("""
 # --- SUPABASE CONNECTION ---
 @st.cache_resource
 def init_supabase() -> Client:
-    url = st.secrets["SUPABASE_URL"]
-    key = st.secrets["SUPABASE_KEY"]
+    url = str(st.secrets["SUPABASE_URL"]).strip()
+    key = str(st.secrets["SUPABASE_KEY"]).strip()
     return create_client(url, key)
 
 supabase = init_supabase()
@@ -83,7 +83,7 @@ def check_pin():
         st.title("🎾 CourtIQ Pro Login")
         pin_input = st.text_input("Enter your access PIN", type="password")
         if st.button("Unlock"):
-            if pin_input == st.secrets["APP_PIN"]:
+            if pin_input == str(st.secrets["APP_PIN"]).strip():
                 st.session_state["authenticated"] = True
                 st.rerun()
             else:
@@ -106,9 +106,22 @@ def parse_rich_note(note_text):
             return {}, note_text
     return {}, note_text
 
-def load_data():
-    response = supabase.table("personal_matches").select("*").execute()
-    df = pd.DataFrame(response.data)
+def format_postgrest_error(err: Exception) -> str:
+    code = getattr(err, "code", None)
+    msg = getattr(err, "message", None) or str(err)
+    hint = getattr(err, "hint", None)
+    details = getattr(err, "details", None)
+    parts = []
+    if code:
+        parts.append(f"Code: `{code}`")
+    parts.append(f"Message: {msg}")
+    if details:
+        parts.append(f"Details: {details}")
+    if hint:
+        parts.append(f"Hint: {hint}")
+    return " | ".join(parts)
+
+def process_raw_dataframe(df: pd.DataFrame):
     if df.empty:
         return df, df, []
 
@@ -132,7 +145,6 @@ def load_data():
     else:
         df["ankle_weights"] = df["ankle_weights"].fillna("No")
 
-    # Separate Video Biomechanics records from Manual Match/Training logs
     is_video = (
         df["match_type"].astype(str).str.contains("Video Biomechanics", case=False, na=False)
         if "match_type" in df.columns
@@ -165,21 +177,55 @@ def load_data():
 
     return manual_df, video_df, parsed_meta_cols
 
-def insert_match(record: dict, existing_cols: list):
-    clean_record = {k: v for k, v in record.items() if k in existing_cols} if existing_cols else record
-    supabase.table("personal_matches").insert(clean_record).execute()
+def load_data():
+    if "local_records" not in st.session_state:
+        st.session_state["local_records"] = []
 
-def batch_insert_matches(records: list, existing_cols: list):
+    db_error = None
+    df = pd.DataFrame()
+    try:
+        response = supabase.table("personal_matches").select("*").execute()
+        df = pd.DataFrame(response.data)
+    except Exception as e:
+        db_error = format_postgrest_error(e)
+        if st.session_state["local_records"]:
+            df = pd.DataFrame(st.session_state["local_records"])
+
+    manual_df, video_df, parsed_meta_cols = process_raw_dataframe(df)
+    return manual_df, video_df, parsed_meta_cols, db_error
+
+def insert_match(record: dict, existing_cols: list, db_connected: bool):
+    clean_record = {k: v for k, v in record.items() if k in existing_cols} if existing_cols else record
+    if db_connected:
+        try:
+            supabase.table("personal_matches").insert(clean_record).execute()
+            return True, None
+        except Exception as e:
+            st.session_state["local_records"].append(clean_record)
+            return False, format_postgrest_error(e)
+    else:
+        st.session_state["local_records"].append(clean_record)
+        return False, "Saved to active session memory (Supabase disconnected)."
+
+def batch_insert_matches(records: list, existing_cols: list, db_connected: bool):
     if not records:
-        return 0
+        return 0, None
     clean_records = [
         ({k: v for k, v in rec.items() if k in existing_cols} if existing_cols else rec)
         for rec in records
     ]
-    chunk_size = 50
-    for i in range(0, len(clean_records), chunk_size):
-        supabase.table("personal_matches").insert(clean_records[i:i + chunk_size]).execute()
-    return len(clean_records)
+    if db_connected:
+        try:
+            chunk_size = 50
+            for i in range(0, len(clean_records), chunk_size):
+                supabase.table("personal_matches").insert(clean_records[i:i + chunk_size]).execute()
+            return len(clean_records), None
+        except Exception as e:
+            st.session_state["local_records"].extend(clean_records)
+            return len(clean_records), format_postgrest_error(e)
+    else:
+        st.session_state["local_records"].extend(clean_records)
+        return len(clean_records), "Loaded into active session memory (Supabase disconnected)."
 
 # --- CSV NORMALIZATION & FULL-FIDELITY PARSER ---
 def safe_float(val):
@@ -201,18 +247,10 @@ def mean_ratings(*vals):
     return round(float(np.mean(valid)), 2) if valid else None
 
 def transform_uploaded_csv_to_records(raw_csv_df: pd.DataFrame, note_col: str, existing_df: pd.DataFrame):
-    """
-    Maps standard Supabase columns AND packs every single extra CSV column
-    (including Google Forms columns like 1st Serve, 2nd Serve, Volleys, Slice,
-    Return Forehand/Backhand, Opponent Grade, Time Played, How did I win/lose?,
-    What did I do good/wrong/better, Timestamp, and any arbitrary columns)
-    into [META:{...}] so 100% of CSV data is preserved in Supabase.
-    """
     df_in = raw_csv_df.copy()
     df_in.columns = [str(c).strip() for c in df_in.columns]
     df_in = df_in.dropna(how="all").reset_index(drop=True)
 
-    # Build deduplication signatures from existing records
     existing_sigs = set()
     if not existing_df.empty:
         for _, erow in existing_df.iterrows():
@@ -294,7 +332,6 @@ def transform_uploaded_csv_to_records(raw_csv_df: pd.DataFrame, note_col: str, e
         else:
             score_str = ""
 
-        # Granular stroke ratings
         s1 = safe_float(get_val(row, ["1st Serve"]))
         s2 = safe_float(get_val(row, ["2nd Serve"]))
         serve_direct = safe_float(get_val(row, ["serve_rating", "Serve"]))
@@ -328,7 +365,6 @@ def transform_uploaded_csv_to_records(raw_csv_df: pd.DataFrame, note_col: str, e
             continue
         existing_sigs.add(sig)
 
-        # Build comprehensive metadata dictionary containing EVERY single CSV field
         meta_payload = {
             "source": "csv_import",
             "ankle_weights": ankle_weights_str
@@ -370,7 +406,6 @@ def transform_uploaded_csv_to_records(raw_csv_df: pd.DataFrame, note_col: str, e
         if better_txt is not None:
             meta_payload["what_can_do_better"] = str(better_txt).strip()
 
-        # Capture ANY additional custom columns from the CSV verbatim
         for col_name in df_in.columns:
             if col_name.lower() not in mapped_source_keys:
                 extra_val = row.get(col_name)
@@ -544,7 +579,19 @@ def analyze_video_gemini(video_path: str, focus_stroke: str, session_context: st
 # --- MAIN APP ---
 st.title("🎾 CourtIQ Pro — Tennis Intelligence, ML & Video Lab")
 
-df, video_df, parsed_meta_cols = load_data()
+df, video_df, parsed_meta_cols, db_error = load_data()
+db_connected = db_error is None
+
+if db_error:
+    st.error(f"⚠️ **Supabase Connection Diagnostic:** {db_error}")
+    st.info(
+        "**How to fix this permanently in Supabase / Streamlit Cloud:**\n"
+        "1. Open your **Supabase Dashboard** → check if your project is **Paused** (click *Restore project* if paused).\n"
+        "2. Go to **Table Editor** → verify the table is named `personal_matches` in the `public` schema, and if **RLS (Row Level Security)** is enabled, add a policy allowing `SELECT` and `INSERT` for `anon` (or disable RLS for your personal table).\n"
+        "3. In **Streamlit Cloud → Manage App → Settings → Secrets**, verify `SUPABASE_URL` and `SUPABASE_KEY` (`anon` `public` key) have no extra quotes or spaces.\n\n"
+        "💡 *In the meantime, you can still upload your CSV in Tab 6 or log sessions in Tab 5 to explore all charts and ML models in session memory!*"
+    )
+
 combined_existing_df = pd.concat([df, video_df], ignore_index=True) if (not df.empty or not video_df.empty) else pd.DataFrame()
 all_cols = list(combined_existing_df.columns) if not combined_existing_df.empty else []
 
@@ -1124,8 +1171,11 @@ with tab4:
                                 "energy_level": round(footwork_score),
                                 note_col: f"[META:{json.dumps(vid_meta)}] {vid_summary}"
                             }
-                            insert_match(vid_record, raw_cols)
-                            st.success("Video analysis saved to your separate Video Biomechanics Log!")
+                            ok, err_msg = insert_match(vid_record, raw_cols, db_connected)
+                            if ok:
+                                st.success("Video analysis saved to your separate Video Biomechanics Log in Supabase!")
+                            else:
+                                st.warning(f"Saved locally for this session ({err_msg})")
                     finally:
                         if os.path.exists(tmp_path):
                             os.remove(tmp_path)
@@ -1265,8 +1315,12 @@ with tab5:
                 "energy_level": energy_level,
                 note_col: encoded_note
             }
-            insert_match(new_record, raw_cols)
-            st.success("Session saved! Your Skill Radar, Scatterplot, Ankle Weights tracker, and ML Coach have been updated.")
+            ok, err_msg = insert_match(new_record, raw_cols, db_connected)
+            if ok:
+                st.success("Session saved to Supabase! Your Skill Radar, Scatterplot, and ML Coach have been updated.")
+            else:
+                st.warning(f"Saved in session memory ({err_msg})")
+            time.sleep(0.8)
             st.rerun()
 
 # ==========================================
@@ -1291,21 +1345,29 @@ with tab6:
 
             ic1, ic2, ic3 = st.columns(3)
             ic1.metric("New Valid Sessions Ready", len(records_ready))
-            ic2.metric("Duplicates Already in DB (Skipped)", dup_count)
+            ic2.metric("Duplicates Already Loaded (Skipped)", dup_count)
             ic3.metric("Blank Rows Ignored", empty_count)
 
             if not preview_df.empty:
                 st.markdown("**Preview of Mapped Sessions & Packed Metadata Columns:**")
                 st.dataframe(preview_df, use_container_width=True, hide_index=True)
 
-                if st.button(f"🚀 Import All {len(records_ready)} Sessions into Supabase Now", use_container_width=True):
-                    with st.spinner("Importing all rows and extended metadata into Supabase..."):
-                        inserted_count = batch_insert_matches(records_ready, raw_cols)
-                        st.success(f"✅ Successfully imported {inserted_count} sessions with 100% of your CSV columns preserved!")
+                btn_label = (
+                    f"🚀 Import All {len(records_ready)} Sessions into Supabase Now"
+                    if db_connected
+                    else f"🚀 Load All {len(records_ready)} Sessions into App Memory Now"
+                )
+                if st.button(btn_label, use_container_width=True):
+                    with st.spinner("Processing all rows and extended metadata..."):
+                        inserted_count, err_msg = batch_insert_matches(records_ready, raw_cols, db_connected)
+                        if err_msg is None:
+                            st.success(f"✅ Successfully imported {inserted_count} sessions into Supabase with 100% of your CSV columns preserved!")
+                        else:
+                            st.warning(f"Loaded {inserted_count} sessions into active session memory ({err_msg})")
                         time.sleep(1)
                         st.rerun()
             else:
-                st.info("All valid rows from this CSV are already in your Supabase database!")
+                st.info("All valid rows from this CSV are already loaded!")
         except Exception as e:
             st.error(f"Error parsing CSV: {e}")
 
@@ -1330,4 +1392,4 @@ with tab6:
         display_df = df.drop(columns=[note_col], errors="ignore")
         st.dataframe(display_df, use_container_width=True)
     else:
-        st.caption("No sessions in database yet.")
+        st.caption("No sessions loaded yet.")
