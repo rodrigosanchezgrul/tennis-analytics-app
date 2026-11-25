@@ -6,7 +6,11 @@ import re
 import os
 import time
 import tempfile
-import cv2
+try:
+    import cv2
+    HAS_CV2 = True
+except ImportError:
+    HAS_CV2 = False
 from datetime import date
 from supabase import create_client, Client
 import plotly.express as px
