@@ -147,32 +147,54 @@ def load_data():
 def get_table_columns(existing_cols: list):
     if existing_cols:
         return existing_cols
-    return ["match_date", "opponent_name", "match_type", "surface", "result", "score", "serve_rating", "mental_focus", "energy_level", "tactical_note"]
+    try:
+        r = supabase.table("personal_matches").select("*").limit(1).execute()
+        if r.data:
+            return list(r.data[0].keys())
+    except Exception:
+        pass
+    return ["match_date", "opponent_name", "match_type", "surface", "result", "score", "serve_rating", "mental_focus", "energy_level", "tactical_note", "tactical_notes", "notes"]
 
-def prepare_db_record(record: dict, valid_cols: list):
-    rec = record.copy()
-    opp_val = str(rec.get("opponent_name") or rec.get("opponent") or "Unknown").strip()
-    if not opp_val or opp_val.lower() == "nan":
-        opp_val = "Unknown"
-    rec["opponent_name"] = opp_val
-    rec["opponent"] = opp_val
+def _safe_insert_batch(records: list):
+    """Automatically strips any column rejected by PostgREST PGRST204 and packs it into META JSON."""
+    if not records:
+        return
+    batch = []
+    for r in records:
+        rec = r.copy()
+        opp_val = str(rec.get("opponent_name") or rec.get("opponent") or "Unknown").strip()
+        if not opp_val or opp_val.lower() == "nan":
+            opp_val = "Unknown"
+        rec["opponent_name"] = opp_val
+        rec["opponent"] = opp_val
+        batch.append({k: v for k, v in rec.items() if v is not None})
 
-    clean_record = {}
-    for k in valid_cols:
-        if k in rec and rec[k] is not None:
-            clean_record[k] = rec[k]
-    return clean_record
+    for _ in range(15):
+        try:
+            supabase.table("personal_matches").insert(batch).execute()
+            return
+        except Exception as e:
+            err_str = str(e)
+            m = re.search(r"Could not find the '([^']+)' column", err_str)
+            if m:
+                bad_col = m.group(1)
+                for rec in batch:
+                    if bad_col in rec:
+                        val = rec.pop(bad_col)
+                        # Preserve the stripped column's value inside META JSON so nothing is lost
+                        n_key = next((c for c in ["tactical_note", "tactical_notes", "notes", "note", "reflection", "comments"] if c in rec), None)
+                        if n_key:
+                            meta, body = parse_rich_note(rec[n_key])
+                            meta[bad_col] = val
+                            rec[n_key] = f"[META:{json.dumps(meta)}] {body}".strip()
+                continue
+            raise e
 
 def insert_match(record: dict, existing_cols: list):
-    valid_cols = get_table_columns(existing_cols)
-    clean_record = prepare_db_record(record, valid_cols)
-    supabase.table("personal_matches").insert(clean_record).execute()
+    _safe_insert_batch([record])
 
 def bulk_insert_matches(records: list, existing_cols: list):
-    valid_cols = get_table_columns(existing_cols)
-    clean_records = [prepare_db_record(rec, valid_cols) for rec in records]
-    if clean_records:
-        supabase.table("personal_matches").insert(clean_records).execute()
+    _safe_insert_batch(records)
 
 def wipe_all_records():
     """Deletes all existing rows in personal_matches so a fresh CSV can be imported cleanly."""
