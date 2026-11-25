@@ -85,6 +85,7 @@ def parse_rich_note(note_text):
             return {}, note_text
     return {}, note_text
 
+@st.cache_data(ttl=60, show_spinner=False)
 def load_data():
     response = supabase.table("personal_matches").select("*").execute()
     df = pd.DataFrame(response.data)
@@ -192,11 +193,14 @@ def _safe_insert_batch(records: list):
 
 def insert_match(record: dict, existing_cols: list):
     _safe_insert_batch([record])
+    st.cache_data.clear()
 
 def bulk_insert_matches(records: list, existing_cols: list):
     _safe_insert_batch(records)
+    st.cache_data.clear()
 
 def wipe_all_records():
+    st.cache_data.clear()
     """Deletes all existing rows in personal_matches so a fresh CSV can be imported cleanly."""
     existing = supabase.table("personal_matches").select("id").execute()
     if existing.data:
