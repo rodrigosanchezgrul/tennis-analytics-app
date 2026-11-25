@@ -603,7 +603,7 @@ with tab3:
     st.subheader("🤖 AI Coach Diagnostic & Machine Learning Lab")
     st.caption("Trains Random Forest, XGBoost, Logistic Regression, and Ridge Regression strictly on your logged matches.")
 
-    ml_df = df[df["Outcome"].isin(["Win", "Loss"])].copy()
+    ml_df = df[df["Outcome"].isin(["Win", "Loss"])].copy() if (not df.empty and "Outcome" in df.columns) else pd.DataFrame()
 
     if len(ml_df) < 6:
         st.warning(f"Currently found {len(ml_df)} completed matches. Log at least 6–8 matches with Win/Loss results to unlock the ML diagnostic engine.")
@@ -1172,3 +1172,4 @@ with tab6:
     st.markdown("---")
     st.subheader(f"Complete Self-Logged Session History ({len(df)} Rows)")
     st.dataframe(df.drop(columns=[note_col], errors="ignore"), use_container_width=True)
+
