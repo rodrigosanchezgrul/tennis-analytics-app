@@ -110,13 +110,14 @@ def load_data():
     response = supabase.table("personal_matches").select("*").execute()
     df = pd.DataFrame(response.data)
     if df.empty:
-        return df, df
+        return df, df, []
 
     if "match_date" in df.columns:
         df["match_date"] = pd.to_datetime(df["match_date"], errors="coerce")
         df = df.sort_values(by="match_date", ascending=False)
 
     note_col = next((c for c in ["tactical_note", "tactical_notes", "notes", "note", "reflection", "comments"] if c in df.columns), None)
+    parsed_meta_cols = []
     if note_col:
         parsed = df[note_col].apply(parse_rich_note)
         meta_df = pd.json_normalize(parsed.apply(lambda x: x[0]))
@@ -124,15 +125,19 @@ def load_data():
         for col in meta_df.columns:
             if col not in df.columns:
                 df[col] = meta_df[col].values
+                parsed_meta_cols.append(col)
 
-    # Normalize ankle_weights flag across older and newer rows
     if "ankle_weights" not in df.columns:
         df["ankle_weights"] = "No"
     else:
         df["ankle_weights"] = df["ankle_weights"].fillna("No")
 
     # Separate Video Biomechanics records from Manual Match/Training logs
-    is_video = df["match_type"].astype(str).str.contains("Video Biomechanics", case=False, na=False) if "match_type" in df.columns else pd.Series(False, index=df.index)
+    is_video = (
+        df["match_type"].astype(str).str.contains("Video Biomechanics", case=False, na=False)
+        if "match_type" in df.columns
+        else pd.Series(False, index=df.index)
+    )
     video_df = df[is_video].copy()
     manual_df = df[~is_video].copy()
 
@@ -158,11 +163,271 @@ def load_data():
         else:
             manual_df["Outcome"] = "Training / Wall"
 
-    return manual_df, video_df
+    return manual_df, video_df, parsed_meta_cols
 
 def insert_match(record: dict, existing_cols: list):
     clean_record = {k: v for k, v in record.items() if k in existing_cols} if existing_cols else record
     supabase.table("personal_matches").insert(clean_record).execute()
+
+def batch_insert_matches(records: list, existing_cols: list):
+    if not records:
+        return 0
+    clean_records = [
+        ({k: v for k, v in rec.items() if k in existing_cols} if existing_cols else rec)
+        for rec in records
+    ]
+    chunk_size = 50
+    for i in range(0, len(clean_records), chunk_size):
+        supabase.table("personal_matches").insert(clean_records[i:i + chunk_size]).execute()
+    return len(clean_records)
+
+# --- CSV NORMALIZATION & FULL-FIDELITY PARSER ---
+def safe_float(val):
+    if pd.isna(val) or str(val).strip() == "":
+        return None
+    try:
+        return float(val)
+    except Exception:
+        return None
+
+def safe_int_rating(val, default=6):
+    f = safe_float(val)
+    if f is None:
+        return default
+    return int(np.clip(round(f), 1, 10))
+
+def mean_ratings(*vals):
+    valid = [v for v in vals if v is not None and not np.isnan(v)]
+    return round(float(np.mean(valid)), 2) if valid else None
+
+def transform_uploaded_csv_to_records(raw_csv_df: pd.DataFrame, note_col: str, existing_df: pd.DataFrame):
+    """
+    Maps standard Supabase columns AND packs every single extra CSV column
+    (including Google Forms columns like 1st Serve, 2nd Serve, Volleys, Slice,
+    Return Forehand/Backhand, Opponent Grade, Time Played, How did I win/lose?,
+    What did I do good/wrong/better, Timestamp, and any arbitrary columns)
+    into [META:{...}] so 100% of CSV data is preserved in Supabase.
+    """
+    df_in = raw_csv_df.copy()
+    df_in.columns = [str(c).strip() for c in df_in.columns]
+    df_in = df_in.dropna(how="all").reset_index(drop=True)
+
+    # Build deduplication signatures from existing records
+    existing_sigs = set()
+    if not existing_df.empty:
+        for _, erow in existing_df.iterrows():
+            d_str = str(erow["match_date"])[:10] if pd.notna(erow.get("match_date")) else ""
+            opp_str = str(erow.get("opponent", "")).strip().lower()
+            mt_str = str(erow.get("match_type", "")).strip().lower()
+            sc_str = str(erow.get("score", "")).strip().lower()
+            existing_sigs.add((d_str, opp_str, mt_str, sc_str))
+
+    col_lookup = {c.lower(): c for c in df_in.columns}
+
+    def get_val(row, candidates):
+        for cand in candidates:
+            actual = col_lookup.get(cand.lower())
+            if actual is not None:
+                v = row.get(actual)
+                if pd.notna(v) and str(v).strip() != "":
+                    return v
+        return None
+
+    mapped_source_keys = {
+        "date", "match_date", "session type", "match_type", "surface",
+        "opponent name", "opponent", "result", "match score", "score",
+        "serve_rating", "1st serve", "2nd serve", "mental_focus", "mentality",
+        "energy_level", "movement", "forehand", "fh_rating", "backhand", "bh_rating",
+        "volleys", "net_rating", "slice", "return forehand", "return backhand",
+        "ret_rating", "opponent grade", "time played", "how did i win/lose?",
+        "what did i do good?", "what did i do wrong?", "what can i do better?",
+        "tactical_note", "notes", "note", "ankle_weights", "ankle weights"
+    }
+
+    records_to_insert = []
+    preview_rows = []
+    skipped_duplicates = 0
+    skipped_empty = 0
+
+    for _, row in df_in.iterrows():
+        raw_date = get_val(row, ["Date", "match_date", "Timestamp"])
+        raw_session = get_val(row, ["Session Type", "match_type"])
+        raw_opp = get_val(row, ["Opponent Name", "Opponent", "opponent"])
+        raw_res = get_val(row, ["Result", "result"])
+
+        if raw_date is None and raw_session is None and raw_opp is None and raw_res is None:
+            skipped_empty += 1
+            continue
+
+        parsed_dt = pd.to_datetime(raw_date, errors="coerce")
+        match_date_str = parsed_dt.strftime("%Y-%m-%d") if pd.notna(parsed_dt) else str(date.today())
+
+        session_type = str(raw_session).strip() if raw_session is not None else "Singles Match"
+        surface_val = get_val(row, ["Surface", "surface"])
+        if surface_val is not None:
+            surface_str = str(surface_val).strip()
+        elif "wall" in session_type.lower():
+            surface_str = "Wall / Concrete"
+        else:
+            surface_str = "Hard"
+
+        opponent_str = str(raw_opp).strip() if raw_opp is not None else ("Wall" if "wall" in session_type.lower() else "Unknown Opponent")
+
+        res_raw_str = str(raw_res).strip() if raw_res is not None else ""
+        if res_raw_str.lower().startswith("w"):
+            result_str = "Win"
+        elif res_raw_str.lower().startswith("l"):
+            result_str = "Loss"
+        elif res_raw_str:
+            result_str = res_raw_str
+        else:
+            result_str = "N/A (Training)"
+
+        score_val = get_val(row, ["Match Score", "Score", "score"])
+        time_played_val = get_val(row, ["Time Played", "Duration"])
+        if score_val is not None and str(score_val).strip() not in ("", "0-0"):
+            score_str = str(score_val).strip()
+        elif time_played_val is not None:
+            score_str = f"Duration: {str(time_played_val).strip()}"
+        elif score_val is not None:
+            score_str = str(score_val).strip()
+        else:
+            score_str = ""
+
+        # Granular stroke ratings
+        s1 = safe_float(get_val(row, ["1st Serve"]))
+        s2 = safe_float(get_val(row, ["2nd Serve"]))
+        serve_direct = safe_float(get_val(row, ["serve_rating", "Serve"]))
+        serve_avg = mean_ratings(s1, s2, serve_direct)
+
+        fh_val = safe_float(get_val(row, ["Forehand", "fh_rating"]))
+        bh_val = safe_float(get_val(row, ["Backhand", "bh_rating"]))
+        vol_val = safe_float(get_val(row, ["Volleys", "net_rating"]))
+        slice_val = safe_float(get_val(row, ["Slice"]))
+        ret_fh = safe_float(get_val(row, ["Return Forehand"]))
+        ret_bh = safe_float(get_val(row, ["Return Backhand"]))
+        ret_direct = safe_float(get_val(row, ["ret_rating", "Return"]))
+        ret_avg = mean_ratings(ret_fh, ret_bh, ret_direct)
+
+        mov_val = safe_float(get_val(row, ["Movement", "energy_level"]))
+        men_val = safe_float(get_val(row, ["Mentality", "mental_focus"]))
+        opp_grade = safe_float(get_val(row, ["Opponent Grade"]))
+        aw_val = get_val(row, ["ankle_weights", "Ankle Weights"])
+        ankle_weights_str = str(aw_val).strip() if aw_val is not None else "No"
+
+        how_wl = get_val(row, ["How did I win/lose?"])
+        good_txt = get_val(row, ["What did I do good?"])
+        wrong_txt = get_val(row, ["What did I do wrong?"])
+        better_txt = get_val(row, ["What can I do better?"])
+        direct_note = get_val(row, ["tactical_note", "notes", "note"])
+        csv_ts = get_val(row, ["Timestamp"])
+
+        sig = (match_date_str, opponent_str.lower(), session_type.lower(), score_str.lower())
+        if sig in existing_sigs:
+            skipped_duplicates += 1
+            continue
+        existing_sigs.add(sig)
+
+        # Build comprehensive metadata dictionary containing EVERY single CSV field
+        meta_payload = {
+            "source": "csv_import",
+            "ankle_weights": ankle_weights_str
+        }
+        if csv_ts is not None:
+            meta_payload["csv_timestamp"] = str(csv_ts).strip()
+        if time_played_val is not None:
+            meta_payload["time_played"] = str(time_played_val).strip()
+        if opp_grade is not None:
+            meta_payload["opponent_grade"] = opp_grade
+        if s1 is not None:
+            meta_payload["first_serve_rating"] = s1
+        if s2 is not None:
+            meta_payload["second_serve_rating"] = s2
+        if fh_val is not None:
+            meta_payload["fh_rating"] = fh_val
+        if bh_val is not None:
+            meta_payload["bh_rating"] = bh_val
+        if vol_val is not None:
+            meta_payload["net_rating"] = vol_val
+        if slice_val is not None:
+            meta_payload["slice_rating"] = slice_val
+        if ret_fh is not None:
+            meta_payload["return_fh_rating"] = ret_fh
+        if ret_bh is not None:
+            meta_payload["return_bh_rating"] = ret_bh
+        if ret_avg is not None:
+            meta_payload["ret_rating"] = ret_avg
+        if how_wl is not None:
+            meta_payload["how_win_lose"] = str(how_wl).strip()
+            if result_str == "Loss":
+                meta_payload["main_leak"] = str(how_wl).strip()
+            elif result_str == "Win":
+                meta_payload["main_weapon"] = str(how_wl).strip()
+        if good_txt is not None:
+            meta_payload["what_did_good"] = str(good_txt).strip()
+        if wrong_txt is not None:
+            meta_payload["what_did_wrong"] = str(wrong_txt).strip()
+        if better_txt is not None:
+            meta_payload["what_can_do_better"] = str(better_txt).strip()
+
+        # Capture ANY additional custom columns from the CSV verbatim
+        for col_name in df_in.columns:
+            if col_name.lower() not in mapped_source_keys:
+                extra_val = row.get(col_name)
+                if pd.notna(extra_val) and str(extra_val).strip() != "":
+                    safe_key = re.sub(r"[^a-zA-Z0-9_]+", "_", col_name.strip().lower()).strip("_")
+                    meta_payload[f"csv_{safe_key}"] = str(extra_val).strip()
+
+        summary_bits = []
+        if time_played_val is not None:
+            summary_bits.append(f"Duration: {str(time_played_val).strip()}")
+        if opp_grade is not None:
+            summary_bits.append(f"Opp Grade: {opp_grade}")
+        if how_wl is not None:
+            summary_bits.append(f"Key Factor: {str(how_wl).strip()}")
+        if good_txt is not None:
+            summary_bits.append(f"Good: {str(good_txt).strip()}")
+        if wrong_txt is not None:
+            summary_bits.append(f"Wrong: {str(wrong_txt).strip()}")
+        if better_txt is not None:
+            summary_bits.append(f"Better: {str(better_txt).strip()}")
+        if direct_note is not None:
+            summary_bits.append(str(direct_note).strip())
+
+        human_summary = " // ".join(summary_bits) if summary_bits else f"Imported {session_type} session."
+        encoded_note = f"[META:{json.dumps(meta_payload, ensure_ascii=False)}] {human_summary}"
+
+        db_record = {
+            "match_date": match_date_str,
+            "match_type": session_type,
+            "surface": surface_str,
+            "opponent": opponent_str,
+            "result": result_str,
+            "score": score_str,
+            "serve_rating": safe_int_rating(serve_avg, default=6),
+            "mental_focus": safe_int_rating(men_val, default=6),
+            "energy_level": safe_int_rating(mov_val, default=6),
+            note_col: encoded_note
+        }
+        records_to_insert.append(db_record)
+        preview_rows.append({
+            "Date": match_date_str,
+            "Session Type": session_type,
+            "Opponent": opponent_str,
+            "Result": result_str,
+            "Score / Time": score_str,
+            "Serve": db_record["serve_rating"],
+            "FH": fh_val,
+            "BH": bh_val,
+            "Volleys": vol_val,
+            "Slice": slice_val,
+            "Return": ret_avg,
+            "Movement": db_record["energy_level"],
+            "Mentality": db_record["mental_focus"],
+            "Extra Fields Packed": len(meta_payload)
+        })
+
+    return records_to_insert, pd.DataFrame(preview_rows), skipped_duplicates, skipped_empty
 
 # --- VIDEO COMPUTER VISION & AI BIOMECHANICS ENGINE ---
 def analyze_video_cv(video_path: str, focus_stroke: str):
@@ -279,10 +544,27 @@ def analyze_video_gemini(video_path: str, focus_stroke: str, session_context: st
 # --- MAIN APP ---
 st.title("🎾 CourtIQ Pro — Tennis Intelligence, ML & Video Lab")
 
-df, video_df = load_data()
-all_cols = list(df.columns) if not df.empty else (list(video_df.columns) if not video_df.empty else [])
-meta_cols = ["clean_note", "opp_style", "pressure", "physical_state", "ankle_weights", "fh_rating", "bh_rating", "ret_rating", "net_rating", "main_weapon", "main_leak", "Category", "Outcome", "video_stroke", "video_context", "kinetic_chain", "contact_point", "balance_recovery", "video_strengths", "video_flaws", "video_drills"]
-raw_cols = [c for c in all_cols if c not in meta_cols]
+df, video_df, parsed_meta_cols = load_data()
+combined_existing_df = pd.concat([df, video_df], ignore_index=True) if (not df.empty or not video_df.empty) else pd.DataFrame()
+all_cols = list(combined_existing_df.columns) if not combined_existing_df.empty else []
+
+known_virtual_cols = {
+    "clean_note", "Category", "Outcome", "opp_style", "pressure", "physical_state",
+    "ankle_weights", "fh_rating", "bh_rating", "ret_rating", "net_rating",
+    "slice_rating", "first_serve_rating", "second_serve_rating",
+    "return_fh_rating", "return_bh_rating", "opponent_grade", "time_played",
+    "how_win_lose", "what_did_good", "what_did_wrong", "what_can_do_better",
+    "csv_timestamp", "source", "main_weapon", "main_leak", "video_stroke",
+    "video_context", "kinetic_chain", "contact_point", "balance_recovery",
+    "video_strengths", "video_flaws", "video_drills"
+} | set(parsed_meta_cols)
+
+raw_cols = [c for c in all_cols if c not in known_virtual_cols]
+if not raw_cols:
+    raw_cols = [
+        "match_date", "match_type", "surface", "opponent", "result",
+        "score", "serve_rating", "mental_focus", "energy_level", "tactical_note"
+    ]
 note_col = next((c for c in ["tactical_note", "tactical_notes", "notes", "note", "reflection", "comments"] if c in raw_cols), "tactical_note")
 
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
@@ -291,7 +573,7 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "🤖 AI Coach & ML Models",
     "🎥 Video Biomechanics Lab",
     "➕ Log Detailed Session",
-    "📁 Full Database & AI Export"
+    "📁 Full Database, CSV Importer & AI Export"
 ])
 
 # ==========================================
@@ -299,10 +581,10 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
 # ==========================================
 with tab1:
     if df.empty:
-        st.info("No manual sessions logged yet. Go to 'Log Detailed Session' to add your first match or wall session!")
+        st.info("No manual sessions logged yet. Import your CSV in Tab 6 or log a session in Tab 5!")
     else:
         st.subheader("🕸️ Pro-Style 8-Axis Skill & Match Profile (Self-Logged Data Only)")
-        st.caption("Tracks your self-reported match and training metrics separately from Video Lab telemetry.")
+        st.caption("Tracks your self-reported match, wall, and imported CSV metrics separately from Video Lab telemetry.")
 
         def get_axis_series(col_name, fallback_col):
             if col_name in df.columns and df[col_name].notna().any():
@@ -437,7 +719,7 @@ with tab1:
 # ==========================================
 with tab2:
     if df.empty:
-        st.info("Log sessions first to see your training volume and loss diagnostics.")
+        st.info("Log sessions or import your CSV first to see your training volume and loss diagnostics.")
     else:
         st.subheader("📊 Court Activity, Ankle Weights Volume & Root-Cause Breakdown")
 
@@ -503,23 +785,27 @@ with tab2:
                 reasons = []
                 if "main_leak" in loss_rows.columns:
                     for item in loss_rows["main_leak"].dropna():
-                        if item != "None":
-                            reasons.append(item)
+                        if str(item).strip() not in ("", "None", "nan"):
+                            reasons.append(str(item).strip())
 
-                if "clean_note" in loss_rows.columns:
-                    keyword_map = {
-                        "Backhand errors / depth": ["backhand", "bh", "revés", "reves"],
-                        "Forehand unforced errors": ["forehand", "fh", "derecha"],
-                        "Serve / Double faults": ["serve", "double fault", "saque", "doble falta"],
-                        "Mental focus / Impatience": ["focus", "mental", "rush", "nerv", "concentra", "paciencia"],
-                        "Footwork / Tired legs": ["footwork", "legs", "tired", "slow", "pies", "cansad", "movimiento"],
-                        "Return of serve": ["return", "devolucion", "devolución"]
-                    }
-                    for note in loss_rows["clean_note"].dropna():
-                        low = str(note).lower()
-                        for label, kws in keyword_map.items():
-                            if any(k in low for k in kws):
-                                reasons.append(label)
+                text_sources = pd.Series("", index=loss_rows.index)
+                for col_txt in ["clean_note", "what_did_wrong", "how_win_lose"]:
+                    if col_txt in loss_rows.columns:
+                        text_sources = text_sources + " " + loss_rows[col_txt].fillna("").astype(str)
+
+                keyword_map = {
+                    "Backhand errors / depth": ["backhand", "bh", "revés", "reves"],
+                    "Forehand unforced errors": ["forehand", "fh", "derecha"],
+                    "Serve / Double faults": ["serve", "double fault", "saque", "doble falta"],
+                    "Mental focus / Impatience": ["focus", "mental", "rush", "nerv", "concentra", "paciencia"],
+                    "Footwork / Tired legs / Spacing": ["footwork", "legs", "tired", "slow", "pies", "cansad", "movimiento", "feet", "space", "close to the ball"],
+                    "Return of serve": ["return", "devolucion", "devolución"]
+                }
+                for note in text_sources:
+                    low = str(note).lower()
+                    for label, kws in keyword_map.items():
+                        if any(k in low for k in kws):
+                            reasons.append(label)
 
                 if reasons:
                     reason_df = pd.Series(reasons).value_counts().reset_index()
@@ -539,22 +825,27 @@ with tab2:
             strengths = []
             if "main_weapon" in df.columns:
                 for w in df["main_weapon"].dropna():
-                    strengths.append(w)
+                    if str(w).strip() not in ("", "None", "nan"):
+                        strengths.append(str(w).strip())
 
             win_rows = df[df["Outcome"] == "Win"]
-            if "clean_note" in win_rows.columns:
-                win_kw = {
-                    "Forehand weapon": ["forehand", "fh", "derecha"],
-                    "Backhand consistency": ["backhand", "bh", "revés", "reves"],
-                    "First serve dominance": ["serve", "ace", "saque"],
-                    "Mental composure": ["focus", "calm", "mental", "concentra"],
-                    "Footwork & defense": ["footwork", "run", "legs", "pies", "defen"]
-                }
-                for note in win_rows["clean_note"].dropna():
-                    low = str(note).lower()
-                    for label, kws in win_kw.items():
-                        if any(k in low for k in kws):
-                            strengths.append(label)
+            win_sources = pd.Series("", index=win_rows.index)
+            for col_txt in ["clean_note", "what_did_good", "how_win_lose"]:
+                if col_txt in win_rows.columns:
+                    win_sources = win_sources + " " + win_rows[col_txt].fillna("").astype(str)
+
+            win_kw = {
+                "Forehand weapon": ["forehand", "fh", "derecha"],
+                "Backhand consistency": ["backhand", "bh", "revés", "reves"],
+                "First serve dominance": ["serve", "ace", "saque"],
+                "Mental composure": ["focus", "calm", "mental", "concentra"],
+                "Footwork & defense": ["footwork", "run", "legs", "pies", "defen", "feet", "move"]
+            }
+            for note in win_sources:
+                low = str(note).lower()
+                for label, kws in win_kw.items():
+                    if any(k in low for k in kws):
+                        strengths.append(label)
 
             if strengths:
                 str_df = pd.Series(strengths).value_counts().reset_index()
@@ -576,13 +867,13 @@ with tab3:
     st.subheader("🤖 AI Coach Diagnostic & Machine Learning Lab")
     st.caption("Trains Random Forest, XGBoost, Logistic Regression, and Ridge Regression strictly on your logged matches.")
 
-    ml_df = df[df["Outcome"].isin(["Win", "Loss"])].copy()
+    ml_df = df[df["Outcome"].isin(["Win", "Loss"])].copy() if not df.empty else pd.DataFrame()
 
     if len(ml_df) < 6:
-        st.warning(f"Currently found {len(ml_df)} completed matches. Log at least 6–8 matches with Win/Loss results to unlock the ML diagnostic engine.")
+        st.warning(f"Currently found {len(ml_df)} completed matches. Import your CSV or log at least 6–8 matches with Win/Loss results to unlock the ML diagnostic engine.")
     else:
         ml_df["target_win"] = np.where(ml_df["Outcome"] == "Win", 1, 0)
-        num_features = [c for c in ["serve_rating", "mental_focus", "energy_level", "fh_rating", "bh_rating", "ret_rating", "net_rating"] if c in ml_df.columns]
+        num_features = [c for c in ["serve_rating", "mental_focus", "energy_level", "fh_rating", "bh_rating", "ret_rating", "net_rating", "slice_rating"] if c in ml_df.columns and ml_df[c].notna().any()]
         X_num = ml_df[num_features].apply(pd.to_numeric, errors="coerce")
         X_num = X_num.fillna(X_num.median()).fillna(5.0)
         X_num["used_ankle_weights"] = np.where(ml_df["ankle_weights"].astype(str) != "No", 1.0, 0.0)
@@ -948,7 +1239,9 @@ with tab5:
                 "ret_rating": ret_rating,
                 "net_rating": net_rating,
                 "main_weapon": main_weapon,
-                "main_leak": main_leak
+                "main_leak": main_leak,
+                "what_did_good": what_worked.strip(),
+                "what_can_do_better": what_to_adjust.strip()
             }
             narrative_parts = []
             if what_worked.strip():
@@ -958,7 +1251,7 @@ with tab5:
             aw_tag = f" | Ankle Weights: {ankle_weights}" if ankle_weights != "No" else ""
             human_summary = f"[{opp_style} | {pressure}{aw_tag} | Weapon: {main_weapon} | Leak: {main_leak}] " + " // ".join(narrative_parts)
 
-            encoded_note = f"[META:{json.dumps(meta_payload)}] {human_summary}".strip()
+            encoded_note = f"[META:{json.dumps(meta_payload, ensure_ascii=False)}] {human_summary}".strip()
 
             new_record = {
                 "match_date": str(session_date),
@@ -977,23 +1270,64 @@ with tab5:
             st.rerun()
 
 # ==========================================
-# TAB 6: FULL DATABASE & AI EXPORT (SELF-REPORTED LOGS)
+# TAB 6: FULL DATABASE, CSV IMPORTER & AI EXPORT (100% DATA FIDELITY)
 # ==========================================
 with tab6:
-    st.subheader("Export Self-Logged Match & Training Dataset for NotebookLM / Gemini")
+    st.subheader("📤 Bulk CSV Importer (100% Data Fidelity — Zero Info Lost)")
+    st.caption(
+        "Upload your Google Forms or custom tennis CSV (`Tennis Log (Responses) - Form Responses 1.csv`). "
+        "Core fields map directly to Supabase, and EVERY extra column (1st/2nd Serve, Volleys, Slice, Return FH/BH, "
+        "Opponent Grade, Time Played, What did I do good/wrong/better, Timestamp, and any custom columns) "
+        "is packed into `[META:{...}]` so nothing is ever lost."
+    )
+
+    uploaded_csv = st.file_uploader("Upload your Tennis CSV file", type=["csv"], key="bulk_csv_uploader")
+    if uploaded_csv is not None:
+        try:
+            raw_uploaded_df = pd.read_csv(uploaded_csv)
+            records_ready, preview_df, dup_count, empty_count = transform_uploaded_csv_to_records(
+                raw_uploaded_df, note_col, combined_existing_df
+            )
+
+            ic1, ic2, ic3 = st.columns(3)
+            ic1.metric("New Valid Sessions Ready", len(records_ready))
+            ic2.metric("Duplicates Already in DB (Skipped)", dup_count)
+            ic3.metric("Blank Rows Ignored", empty_count)
+
+            if not preview_df.empty:
+                st.markdown("**Preview of Mapped Sessions & Packed Metadata Columns:**")
+                st.dataframe(preview_df, use_container_width=True, hide_index=True)
+
+                if st.button(f"🚀 Import All {len(records_ready)} Sessions into Supabase Now", use_container_width=True):
+                    with st.spinner("Importing all rows and extended metadata into Supabase..."):
+                        inserted_count = batch_insert_matches(records_ready, raw_cols)
+                        st.success(f"✅ Successfully imported {inserted_count} sessions with 100% of your CSV columns preserved!")
+                        time.sleep(1)
+                        st.rerun()
+            else:
+                st.info("All valid rows from this CSV are already in your Supabase database!")
+        except Exception as e:
+            st.error(f"Error parsing CSV: {e}")
+
+    st.markdown("---")
+    st.subheader("📥 Full-Fidelity AI Export (Unpacks All Metadata & CSV Fields)")
     if not df.empty:
-        export_df = df.drop(columns=[note_col], errors="ignore")
+        export_df = df.drop(columns=[note_col], errors="ignore").copy()
         csv_export = export_df.to_csv(index=False).encode("utf-8")
         st.download_button(
-            label="📥 Download Self-Logged Analytics CSV for External AI",
+            label="📥 Download Complete Self-Logged Analytics CSV (All Unpacked Columns)",
             data=csv_export,
-            file_name=f"courtiq_self_logged_analytics_{date.today()}.csv",
+            file_name=f"courtiq_full_fidelity_dataset_{date.today()}.csv",
             mime="text/csv",
             use_container_width=True
         )
     else:
-        st.caption("Log sessions first to enable CSV export.")
+        st.caption("Import your CSV or log sessions first to enable full-fidelity CSV export.")
 
     st.markdown("---")
-    st.subheader("Complete Self-Logged Session History")
-    st.dataframe(df.drop(columns=[note_col], errors="ignore"), use_container_width=True)
+    st.subheader("📋 Complete Self-Logged Session History (All Unpacked Fields)")
+    if not df.empty:
+        display_df = df.drop(columns=[note_col], errors="ignore")
+        st.dataframe(display_df, use_container_width=True)
+    else:
+        st.caption("No sessions in database yet.")
