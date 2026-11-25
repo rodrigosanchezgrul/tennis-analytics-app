@@ -35,11 +35,16 @@ check_pin()
 
 # --- HELPER FUNCTIONS ---
 def load_data():
-    response = supabase.table("personal_matches").select("*").order("match_date", desc=True).execute()
-    return pd.DataFrame(response.data)
+    response = supabase.table("personal_matches").select("*").execute()
+    df = pd.DataFrame(response.data)
+    if not df.empty and "match_date" in df.columns:
+        df = df.sort_values(by="match_date", ascending=False)
+    return df
 
-def insert_match(record: dict):
-    supabase.table("personal_matches").insert(record).execute()
+def insert_match(record: dict, existing_cols: list):
+    # Only send keys that actually exist in your Supabase table
+    clean_record = {k: v for k, v in record.items() if k in existing_cols} if existing_cols else record
+    supabase.table("personal_matches").insert(clean_record).execute()
 
 # --- MAIN APP ---
 st.title("🎾 CourtIQ — Personal Tennis Tracker")
@@ -47,6 +52,10 @@ st.title("🎾 CourtIQ — Personal Tennis Tracker")
 tab1, tab2, tab3 = st.tabs(["📊 Dashboard", "➕ Log Session", "📁 Match Log & AI Export"])
 
 df = load_data()
+existing_cols = list(df.columns) if not df.empty else []
+
+# Detect the exact column name used for notes in your table
+note_col = next((c for c in ["tactical_note", "tactical_notes", "notes", "note", "reflection", "comments"] if c in existing_cols), "tactical_note")
 
 # --- TAB 1: DASHBOARD ---
 with tab1:
@@ -55,18 +64,28 @@ with tab1:
     else:
         col1, col2, col3, col4 = st.columns(4)
         total_sessions = len(df)
-        matches_only = df[df["match_type"].isin(["Singles Match", "Doubles Match", "Practice Match"])]
-        wins = len(matches_only[matches_only["result"] == "Win"])
-        win_rate = f"{(wins / len(matches_only) * 100):.0f}%" if len(matches_only) > 0 else "N/A"
-        wall_sessions = len(df[df["match_type"] == "Wall Session"])
+
+        if "match_type" in df.columns:
+            matches_only = df[df["match_type"].isin(["Singles Match", "Doubles Match", "Practice Match", "Singles", "Doubles"])]
+            wall_sessions = len(df[df["match_type"] == "Wall Session"])
+        else:
+            matches_only = df
+            wall_sessions = 0
+
+        if "result" in df.columns and len(matches_only) > 0:
+            wins = len(matches_only[matches_only["result"].astype(str).str.lower().str.startswith("w")])
+            win_rate = f"{(wins / len(matches_only) * 100):.0f}%"
+        else:
+            win_rate = "N/A"
 
         col1.metric("Total Sessions", total_sessions)
         col2.metric("Match Win Rate", win_rate)
         col3.metric("Wall Sessions", wall_sessions)
-        col4.metric("Avg Focus (1-5)", f"{df['mental_focus'].mean():.1f}" if "mental_focus" in df else "N/A")
+        col4.metric("Avg Focus (1-10)", f"{df['mental_focus'].mean():.1f}" if "mental_focus" in df.columns else "N/A")
 
         st.subheader("Recent Sessions")
-        st.dataframe(df[["match_date", "match_type", "opponent", "result", "score", "tactical_note"]], use_container_width=True)
+        preferred_cols = [c for c in ["match_date", "match_type", "opponent", "result", "score", note_col] if c in df.columns]
+        st.dataframe(df[preferred_cols] if preferred_cols else df, use_container_width=True)
 
 # --- TAB 2: LOG SESSION (FAST 30-SEC CHECK-IN) ---
 with tab2:
@@ -86,11 +105,11 @@ with tab2:
         score = c6.text_input("Score or Duration (e.g., 6-4 6-3 or 45 mins)")
 
         st.markdown("---")
-        st.markdown("**Quick Feel & Ratings (1 = Low, 5 = Peak)**")
+        st.markdown("**Quick Feel & Ratings (1 = Low, 10 = Peak)**")
         r1, r2, r3 = st.columns(3)
-        serve_rating = r1.slider("Stroke / Serve Feel", 1, 5, 3)
-        mental_focus = r2.slider("Mental Focus", 1, 5, 3)
-        energy_level = r3.slider("Energy / Footwork", 1, 5, 3)
+        serve_rating = r1.slider("Stroke / Serve Feel", 1, 10, 6)
+        mental_focus = r2.slider("Mental Focus", 1, 10, 6)
+        energy_level = r3.slider("Energy / Footwork", 1, 10, 6)
 
         st.markdown("---")
         st.markdown("**Fast AI Reflection (Keep it brief)**")
@@ -121,9 +140,9 @@ with tab2:
                 "serve_rating": serve_rating,
                 "mental_focus": mental_focus,
                 "energy_level": energy_level,
-                "tactical_note": formatted_note
+                note_col: formatted_note
             }
-            insert_match(new_record)
+            insert_match(new_record, existing_cols)
             st.success("Session saved to Supabase!")
             st.rerun()
 
