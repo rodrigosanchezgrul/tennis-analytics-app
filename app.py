@@ -34,34 +34,23 @@ st.set_page_config(page_title="CourtIQ Pro | Tennis Analytics, ML & Video Lab", 
 # --- CUSTOM STYLING ---
 st.markdown("""
 <style>
-    .coach-card {
+    .coach-card, .loss-card, .wall-card, .video-card {
         background-color: #161b22;
-        border-left: 5px solid #2ecc71;
+        color: #f8fafc !important;
         padding: 18px;
         border-radius: 8px;
         margin-bottom: 15px;
     }
-    .loss-card {
-        background-color: #161b22;
-        border-left: 5px solid #e74c3c;
-        padding: 18px;
-        border-radius: 8px;
-        margin-bottom: 15px;
+    .coach-card h4, .loss-card h4, .wall-card h4, .video-card h4,
+    .coach-card p, .loss-card p, .wall-card p, .video-card p,
+    .coach-card b, .loss-card b, .wall-card b, .video-card b,
+    .coach-card i, .loss-card i, .wall-card i, .video-card i {
+        color: #f8fafc !important;
     }
-    .wall-card {
-        background-color: #161b22;
-        border-left: 5px solid #3498db;
-        padding: 18px;
-        border-radius: 8px;
-        margin-bottom: 15px;
-    }
-    .video-card {
-        background-color: #161b22;
-        border-left: 5px solid #9b59b6;
-        padding: 18px;
-        border-radius: 8px;
-        margin-bottom: 15px;
-    }
+    .coach-card { border-left: 5px solid #2ecc71; }
+    .loss-card  { border-left: 5px solid #e74c3c; }
+    .wall-card  { border-left: 5px solid #3498db; }
+    .video-card { border-left: 5px solid #9b59b6; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -582,15 +571,6 @@ st.title("🎾 CourtIQ Pro — Tennis Intelligence, ML & Video Lab")
 df, video_df, parsed_meta_cols, db_error = load_data()
 db_connected = db_error is None
 
-if db_error:
-    st.error(f"⚠️ **Supabase Connection Diagnostic:** {db_error}")
-    st.info(
-        "**How to fix this permanently in Supabase / Streamlit Cloud:**\n"
-        "1. Open your **Supabase Dashboard** → check if your project is **Paused** (click *Restore project* if paused).\n"
-        "2. Go to **Table Editor** → verify the table is named `personal_matches` in the `public` schema, and if **RLS (Row Level Security)** is enabled, add a policy allowing `SELECT` and `INSERT` for `anon` (or disable RLS for your personal table).\n"
-        "3. In **Streamlit Cloud → Manage App → Settings → Secrets**, verify `SUPABASE_URL` and `SUPABASE_KEY` (`anon` `public` key) have no extra quotes or spaces.\n\n"
-        "💡 *In the meantime, you can still upload your CSV in Tab 6 or log sessions in Tab 5 to explore all charts and ML models in session memory!*"
-    )
 
 combined_existing_df = pd.concat([df, video_df], ignore_index=True) if (not df.empty or not video_df.empty) else pd.DataFrame()
 all_cols = list(combined_existing_df.columns) if not combined_existing_df.empty else []
@@ -1393,3 +1373,4 @@ with tab6:
         st.dataframe(display_df, use_container_width=True)
     else:
         st.caption("No sessions loaded yet.")
+
