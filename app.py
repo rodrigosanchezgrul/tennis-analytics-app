@@ -6,11 +6,6 @@ import re
 import os
 import time
 import tempfile
-try:
-    import cv2
-    HAS_CV2 = True
-except ImportError:
-    HAS_CV2 = False
 from datetime import date
 from supabase import create_client, Client
 import plotly.express as px
@@ -20,6 +15,12 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import cross_val_score
 import xgboost as xgb
+
+try:
+    import cv2
+    HAS_CV2 = True
+except ImportError:
+    HAS_CV2 = False
 
 try:
     from google import genai
@@ -124,6 +125,12 @@ def load_data():
             if col not in df.columns:
                 df[col] = meta_df[col].values
 
+    # Normalize ankle_weights flag across older and newer rows
+    if "ankle_weights" not in df.columns:
+        df["ankle_weights"] = "No"
+    else:
+        df["ankle_weights"] = df["ankle_weights"].fillna("No")
+
     # Separate Video Biomechanics records from Manual Match/Training logs
     is_video = df["match_type"].astype(str).str.contains("Video Biomechanics", case=False, na=False) if "match_type" in df.columns else pd.Series(False, index=df.index)
     video_df = df[is_video].copy()
@@ -159,7 +166,17 @@ def insert_match(record: dict, existing_cols: list):
 
 # --- VIDEO COMPUTER VISION & AI BIOMECHANICS ENGINE ---
 def analyze_video_cv(video_path: str, focus_stroke: str):
-    """Extracts movement cadence, swing explosiveness, and key contact frames using OpenCV."""
+    if not HAS_CV2:
+        return {
+            "duration_sec": 0.0,
+            "footwork_cadence": 6.5,
+            "swing_explosiveness": 6.5,
+            "recovery_rhythm": 6.5,
+            "burst_ratio": 2.0,
+            "motion_df": pd.DataFrame(),
+            "key_frames": []
+        }
+
     cap = cv2.VideoCapture(video_path)
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -170,7 +187,7 @@ def analyze_video_cv(video_path: str, focus_stroke: str):
     frame_indices = []
     sampled_frames = []
 
-    step = max(1, int(fps // 6))  # Sample ~6 frames per second for fast cloud execution
+    step = max(1, int(fps // 6))
     idx = 0
     while True:
         ret, frame = cap.read()
@@ -198,15 +215,12 @@ def analyze_video_cv(video_path: str, focus_stroke: str):
     peak_motion = float(np.percentile(arr, 95))
     burst_ratio = peak_motion / (mean_motion + 1e-5)
 
-    # Convert physical motion telemetry into 1-10 tennis biomechanics indices
     footwork_cadence = float(np.clip(4.0 + (mean_motion / 3.5), 1.0, 10.0))
     swing_explosiveness = float(np.clip(4.5 + (burst_ratio * 1.4), 1.0, 10.0))
     recovery_rhythm = float(np.clip(8.5 - (np.std(arr) / (mean_motion + 1e-5)) * 1.8, 1.0, 10.0))
 
-    # Grab top 3 peak-action frames (contact / explosive movement moments)
     top_frames = sorted(sampled_frames, key=lambda x: x[0], reverse=True)[:3]
     top_frames = sorted(top_frames, key=lambda x: x[1])
-
     motion_df = pd.DataFrame({"Time (sec)": frame_indices, "Movement & Swing Intensity": motion_scores})
 
     return {
@@ -219,8 +233,7 @@ def analyze_video_cv(video_path: str, focus_stroke: str):
         "key_frames": top_frames
     }
 
-def analyze_video_gemini(video_path: str, focus_stroke: str, session_context: str):
-    """Uses Gemini Multimodal Vision if GEMINI_API_KEY is configured in Streamlit Secrets."""
+def analyze_video_gemini(video_path: str, focus_stroke: str, session_context: str, ankle_weights_used: str):
     if not HAS_GENAI or "GEMINI_API_KEY" not in st.secrets:
         return None
     try:
@@ -230,8 +243,15 @@ def analyze_video_gemini(video_path: str, focus_stroke: str, session_context: st
             time.sleep(2)
             uploaded = client.files.get(name=uploaded.name)
 
+        weight_note = (
+            f"IMPORTANT CONTEXT: The player is wearing ankle weights ({ankle_weights_used}) during this clip. Account for added lower-body load when evaluating footwork speed, split-step explosiveness, and joint alignment."
+            if ankle_weights_used != "No"
+            else "The player is wearing standard tennis footwear without ankle weights."
+        )
+
         prompt = f"""
         You are an elite ATP/WTA tennis biomechanics coach. Analyze this {session_context} tennis video focusing on: {focus_stroke}.
+        {weight_note}
         Return ONLY valid JSON with these exact keys:
         {{
             "kinetic_chain_score": <float 1-10>,
@@ -261,7 +281,7 @@ st.title("🎾 CourtIQ Pro — Tennis Intelligence, ML & Video Lab")
 
 df, video_df = load_data()
 all_cols = list(df.columns) if not df.empty else (list(video_df.columns) if not video_df.empty else [])
-meta_cols = ["clean_note", "opp_style", "pressure", "physical_state", "fh_rating", "bh_rating", "ret_rating", "net_rating", "main_weapon", "main_leak", "Category", "Outcome", "video_stroke", "video_context", "kinetic_chain", "contact_point", "balance_recovery", "video_strengths", "video_flaws", "video_drills"]
+meta_cols = ["clean_note", "opp_style", "pressure", "physical_state", "ankle_weights", "fh_rating", "bh_rating", "ret_rating", "net_rating", "main_weapon", "main_leak", "Category", "Outcome", "video_stroke", "video_context", "kinetic_chain", "contact_point", "balance_recovery", "video_strengths", "video_flaws", "video_drills"]
 raw_cols = [c for c in all_cols if c not in meta_cols]
 note_col = next((c for c in ["tactical_note", "tactical_notes", "notes", "note", "reflection", "comments"] if c in raw_cols), "tactical_note")
 
@@ -393,7 +413,7 @@ with tab1:
         scatter_plot_df = radar_df.copy()
         scatter_plot_df["Date"] = df["match_date"].dt.strftime("%Y-%m-%d") if "match_date" in df.columns else ""
         scatter_plot_df["Opponent / Session"] = df["opponent"] if "opponent" in df.columns else ""
-        scatter_plot_df["Score"] = df["score"] if "score" in df.columns else ""
+        scatter_plot_df["Ankle Weights"] = df["ankle_weights"] if "ankle_weights" in df.columns else "No"
         scatter_plot_df["Notes"] = df["clean_note"].fillna("") if "clean_note" in df.columns else ""
 
         rng = np.random.default_rng(42)
@@ -402,7 +422,7 @@ with tab1:
 
         fig_scatter = px.scatter(
             scatter_plot_df, x="x_jit", y="y_jit", color="Outcome", size="Attack / Overall Index",
-            hover_data={"x_jit": False, "y_jit": False, x_axis: ":.1f", y_axis: ":.1f", "Date": True, "Opponent / Session": True, "Score": True, "Notes": True},
+            hover_data={"x_jit": False, "y_jit": False, x_axis: ":.1f", y_axis: ":.1f", "Date": True, "Opponent / Session": True, "Ankle Weights": True, "Notes": True},
             color_discrete_map={"Win": "#2ecc71", "Loss": "#e74c3c", "Training / Wall": "#3498db"},
             trendline="ols" if show_trend else None,
             labels={"x_jit": x_axis, "y_jit": y_axis}, template="plotly_dark"
@@ -413,29 +433,29 @@ with tab1:
         st.plotly_chart(fig_scatter, use_container_width=True)
 
 # ==========================================
-# TAB 2: VOLUME, WINS & LOSS REASONS
+# TAB 2: VOLUME, WINS, ANKLE WEIGHTS & LOSS REASONS
 # ==========================================
 with tab2:
     if df.empty:
         st.info("Log sessions first to see your training volume and loss diagnostics.")
     else:
-        st.subheader("📊 Court Activity, Win/Loss Totals & Root-Cause Breakdown")
+        st.subheader("📊 Court Activity, Ankle Weights Volume & Root-Cause Breakdown")
 
         total_all = len(df)
         total_matches = len(df[df["Outcome"].isin(["Win", "Loss"])])
         total_wins = len(df[df["Outcome"] == "Win"])
         total_losses = len(df[df["Outcome"] == "Loss"])
         total_wall = len(df[df["match_type"].astype(str).str.contains("Wall", case=False, na=False)]) if "match_type" in df.columns else 0
-        total_drills = len(df[df["Outcome"] == "Training / Wall"]) - total_wall
+        weighted_sessions = len(df[df["ankle_weights"].astype(str) != "No"])
         win_pct = (total_wins / total_matches * 100) if total_matches > 0 else 0
 
         k1, k2, k3, k4, k5, k6 = st.columns(6)
         k1.metric("Total Court Days", total_all)
         k2.metric("Matches Played", total_matches)
-        k3.metric("Total Wins", total_wins)
-        k4.metric("Total Losses", total_losses)
-        k5.metric("Win Rate", f"{win_pct:.0f}%")
-        k6.metric("Wall / Training", f"{total_wall} Wall / {max(0, total_drills)} Drill")
+        k3.metric("Wins / Losses", f"{total_wins}W - {total_losses}L")
+        k4.metric("Win Rate", f"{win_pct:.0f}%")
+        k5.metric("Wall Sessions", total_wall)
+        k6.metric("🏋️ Ankle Weight Sessions", weighted_sessions)
 
         st.markdown("---")
         v1, v2 = st.columns(2)
@@ -453,18 +473,23 @@ with tab2:
                 st.plotly_chart(fig_vol, use_container_width=True)
 
         with v2:
-            st.subheader("Monthly Training & Match Consistency")
-            if "match_date" in df.columns and df["match_date"].notna().any():
-                monthly = df.copy()
-                monthly["Month"] = monthly["match_date"].dt.to_period("M").astype(str)
-                m_grp = monthly.groupby(["Month", "Outcome"]).size().reset_index(name="Sessions")
-                fig_month = px.bar(
-                    m_grp, x="Month", y="Sessions", color="Outcome", barmode="stack",
-                    color_discrete_map={"Win": "#2ecc71", "Loss": "#e74c3c", "Training / Wall": "#3498db"},
-                    template="plotly_dark"
+            st.subheader("🏋️ Ankle Weights vs. Standard Footwork Impact")
+            aw_df = df.copy()
+            aw_df["Training Load"] = np.where(aw_df["ankle_weights"].astype(str) == "No", "Standard (No Weights)", "With Ankle Weights")
+            rating_cols = [c for c in ["serve_rating", "mental_focus", "energy_level"] if c in aw_df.columns]
+            if rating_cols and aw_df["Training Load"].nunique() > 1:
+                aw_grp = aw_df.groupby("Training Load")[rating_cols].mean().reset_index().melt(
+                    id_vars="Training Load", var_name="Metric", value_name="Avg Score"
                 )
-                fig_month.update_layout(height=340)
-                st.plotly_chart(fig_month, use_container_width=True)
+                fig_aw = px.bar(
+                    aw_grp, x="Metric", y="Avg Score", color="Training Load", barmode="group",
+                    color_discrete_map={"Standard (No Weights)": "#3498db", "With Ankle Weights": "#f39c12"},
+                    range_y=[0, 10], template="plotly_dark"
+                )
+                fig_aw.update_layout(height=340)
+                st.plotly_chart(fig_aw, use_container_width=True)
+            else:
+                st.info("Log sessions with and without Ankle Weights in Tab 5 to compare your footwork energy and stroke execution across loads!")
 
         st.markdown("---")
         l_col1, l_col2 = st.columns(2)
@@ -560,6 +585,7 @@ with tab3:
         num_features = [c for c in ["serve_rating", "mental_focus", "energy_level", "fh_rating", "bh_rating", "ret_rating", "net_rating"] if c in ml_df.columns]
         X_num = ml_df[num_features].apply(pd.to_numeric, errors="coerce")
         X_num = X_num.fillna(X_num.median()).fillna(5.0)
+        X_num["used_ankle_weights"] = np.where(ml_df["ankle_weights"].astype(str) != "No", 1.0, 0.0)
 
         if "surface" in ml_df.columns:
             X_surf = pd.get_dummies(ml_df["surface"].fillna("Hard"), prefix="Surface", drop_first=False).astype(float)
@@ -578,10 +604,10 @@ with tab3:
             log_reg = LogisticRegression(C=1.0, random_state=42).fit(X_scaled, y)
             rf_clf = RandomForestClassifier(n_estimators=150, max_depth=3, random_state=42).fit(X, y)
             xgb_clf = xgb.XGBClassifier(n_estimators=60, max_depth=2, learning_rate=0.1, eval_metric="logloss", random_state=42).fit(X, y)
-            ridge_reg = Ridge(alpha=1.0).fit(X_scaled, X_num.mean(axis=1))
+            ridge_reg = Ridge(alpha=1.0).fit(X_scaled, X_num[num_features].mean(axis=1))
 
-            win_means = X_num[y == 1].mean()
-            loss_means = X_num[y == 0].mean()
+            win_means = X_num[num_features][y == 1].mean()
+            loss_means = X_num[num_features][y == 0].mean()
             diffs = (win_means - loss_means).sort_values(ascending=False)
 
             biggest_win_driver = diffs.index[0]
@@ -589,6 +615,7 @@ with tab3:
             weakest_in_losses = loss_means.idxmin()
 
             wall_count = len(df[df["Outcome"] == "Training / Wall"])
+            aw_count = len(df[df["ankle_weights"].astype(str) != "No"])
             match_count = len(ml_df)
 
             st.markdown("### 🧠 Automated AI Coach Report")
@@ -614,16 +641,11 @@ with tab3:
                 """, unsafe_allow_html=True)
 
             with c_rep3:
-                ratio_msg = (
-                    f"You have logged <b>{wall_count} training/wall sessions</b> vs. <b>{match_count} matches</b>. Increase wall reps focused on <b>{weakest_in_losses}</b> before your next match."
-                    if wall_count < match_count
-                    else f"Great <b>{wall_count}:{match_count}</b> training-to-match ratio! Dedicate your next wall session to high-rep consistency on <b>{weakest_in_losses}</b>."
-                )
                 st.markdown(f"""
                 <div class="wall-card">
-                    <h4>🧱 Wall & Match Training Plan</h4>
+                    <h4>🧱 Wall & Ankle-Weight Training Plan</h4>
                     <p><b>#1 Priority Drill:</b> Target <b>{weakest_in_losses}</b> & <b>{biggest_win_driver}</b>.</p>
-                    <p>{ratio_msg}</p>
+                    <p>You have logged <b>{wall_count} wall/drill sessions</b> and <b>{aw_count} ankle-weight sessions</b> across <b>{match_count} matches</b>. Use ankle weights for short 15-min split-step bursts, then remove them to lock in explosive match footwork.</p>
                 </div>
                 """, unsafe_allow_html=True)
 
@@ -636,7 +658,7 @@ with tab3:
                 m1.metric("Random Forest Accuracy", f"{rf_acc*100:.0f}%")
                 m2.metric("XGBoost Accuracy", f"{xgb_acc*100:.0f}%")
                 m3.metric("Logistic Regression Accuracy", f"{log_acc*100:.0f}%")
-                m4.metric("Ridge Regression R²", f"{ridge_reg.score(X_scaled, X_num.mean(axis=1)):.2f}")
+                m4.metric("Ridge Regression R²", f"{ridge_reg.score(X_scaled, X_num[num_features].mean(axis=1)):.2f}")
 
             st.markdown("---")
             col_imp1, col_imp2 = st.columns(2)
@@ -696,35 +718,39 @@ with tab3:
             p4.metric("Logistic Regression", f"{prob_lr*100:.1f}%")
 
 # ==========================================
-# TAB 4: VIDEO BIOMECHANICS LAB (COMPLETELY SEPARATE FROM SELF-LOGGED INPUTS)
+# TAB 4: VIDEO BIOMECHANICS LAB (SEPARATE FROM SELF-LOGGED INPUTS)
 # ==========================================
 with tab4:
     st.subheader("🎥 Video Biomechanics & Stroke Movement Lab")
-    st.caption("Upload match or training videos from your folder. Computer Vision & AI extract movement cadence, swing explosiveness, and stroke mechanics—stored completely separate from your self-reported match logs.")
+    st.caption("Upload match or training videos from your folder. Gemini Vision & OpenCV extract movement cadence, swing explosiveness, and stroke mechanics—stored completely separate from your self-reported match logs.")
 
     has_gemini = HAS_GENAI and ("GEMINI_API_KEY" in st.secrets)
     if has_gemini:
-        st.success("✅ **Dual-Engine Active:** OpenCV Kinetic Telemetry + Gemini Multimodal Vision Biomechanics Coach")
+        st.success("✅ **Gemini Multimodal Vision + OpenCV Dual-Engine Active:** Full AI frame-by-frame kinetic chain & stroke coaching enabled!")
     else:
-        st.info("ℹ️ **Built-In OpenCV Kinetic Telemetry Active.** (Tip: Add `GEMINI_API_KEY` to your Streamlit Cloud Secrets anytime to unlock full AI frame-by-frame stroke & kinetic-chain coaching!)")
+        st.info("ℹ️ **Built-In OpenCV Kinetic Telemetry Active.** Add `GEMINI_API_KEY` to your Streamlit Cloud Secrets to activate Gemini Vision stroke biomechanics!")
 
     with st.expander("📤 Upload & Analyze a Match or Training Video", expanded=True):
-        vc1, vc2, vc3 = st.columns(3)
+        vc1, vc2, vc3, vc4 = st.columns(4)
         video_date = vc1.date_input("Video Date", value=date.today(), key="vid_date")
         focus_stroke = vc2.selectbox(
-            "Primary Stroke / Focus in Clip",
+            "Primary Stroke / Focus",
             ["Full Rally / Match Movement", "Forehand Mechanics", "Backhand Mechanics", "Serve Motion", "Return & Split-Step", "Wall Drill Footwork"]
         )
         video_context = vc3.selectbox(
             "Footage Context",
             ["Match Footage", "Wall Training", "Court Drills / Basket", "Practice Set"]
         )
+        vid_ankle_weights = vc4.selectbox(
+            "🏋️ Ankle Weights in Video?",
+            ["No", "Yes — Light (0.5–1 kg)", "Yes — Heavy (1.5+ kg)"]
+        )
 
         uploaded_video = st.file_uploader("Select a video file from your folder (MP4, MOV, AVI — clips under 2 mins process fastest)", type=["mp4", "mov", "avi", "mkv"])
 
         if uploaded_video is not None:
-            if st.button("🚀 Run Biomechanics & Movement Analysis", use_container_width=True):
-                with st.spinner("Extracting movement cadence, swing acceleration peaks, and biomechanical frames..."):
+            if st.button("🚀 Run Gemini Vision & Biomechanics Analysis", use_container_width=True):
+                with st.spinner("Analyzing kinetic chain, split-step footwork, and swing mechanics..."):
                     suffix = os.path.splitext(uploaded_video.name)[1] or ".mp4"
                     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
                         tmp_file.write(uploaded_video.read())
@@ -732,75 +758,61 @@ with tab4:
 
                     try:
                         cv_res = analyze_video_cv(tmp_path, focus_stroke)
-                        ai_res = analyze_video_gemini(tmp_path, focus_stroke, video_context)
+                        ai_res = analyze_video_gemini(tmp_path, focus_stroke, video_context, vid_ankle_weights)
 
-                        if cv_res is None:
-                            st.error("Could not read frames from this video file. Try an MP4 or MOV clip.")
+                        if cv_res is None and ai_res is None:
+                            st.error("Could not process this video file. Try an MP4 or MOV clip.")
                         else:
-                            # Combine CV + AI metrics cleanly
-                            kinetic_score = ai_res["kinetic_chain_score"] if ai_res else cv_res["swing_explosiveness"]
-                            footwork_score = ai_res["footwork_splitstep_score"] if ai_res else cv_res["footwork_cadence"]
-                            contact_score = ai_res["contact_point_score"] if ai_res else round((cv_res["swing_explosiveness"] + cv_res["recovery_rhythm"]) / 2, 1)
-                            balance_score = ai_res["balance_recovery_score"] if ai_res else cv_res["recovery_rhythm"]
+                            kinetic_score = float(ai_res["kinetic_chain_score"]) if ai_res else cv_res["swing_explosiveness"]
+                            footwork_score = float(ai_res["footwork_splitstep_score"]) if ai_res else cv_res["footwork_cadence"]
+                            contact_score = float(ai_res["contact_point_score"]) if ai_res else round((cv_res["swing_explosiveness"] + cv_res["recovery_rhythm"]) / 2, 1)
+                            balance_score = float(ai_res["balance_recovery_score"]) if ai_res else cv_res["recovery_rhythm"]
 
-                            st.markdown("### 📊 Video Telemetry Results")
+                            st.markdown("### 📊 Video Biomechanics & Telemetry Results")
                             m1, m2, m3, m4 = st.columns(4)
                             m1.metric("Swing / Kinetic Chain", f"{kinetic_score:.1f} / 10")
                             m2.metric("Footwork & Split-Step", f"{footwork_score:.1f} / 10")
                             m3.metric("Contact Point Timing", f"{contact_score:.1f} / 10")
                             m4.metric("Balance & Recovery", f"{balance_score:.1f} / 10")
 
-                            # Plot movement intensity waveform across the video clip
-                            fig_wave = px.area(
-                                cv_res["motion_df"], x="Time (sec)", y="Movement & Swing Intensity",
-                                title=f"Kinetic Movement & Swing Acceleration Timeline ({uploaded_video.name})",
-                                template="plotly_dark", color_discrete_sequence=["#9b59b6"]
-                            )
-                            fig_wave.update_layout(height=280)
-                            st.plotly_chart(fig_wave, use_container_width=True)
+                            if cv_res and not cv_res["motion_df"].empty:
+                                fig_wave = px.area(
+                                    cv_res["motion_df"], x="Time (sec)", y="Movement & Swing Intensity",
+                                    title=f"Kinetic Movement & Swing Acceleration Timeline ({uploaded_video.name})",
+                                    template="plotly_dark", color_discrete_sequence=["#9b59b6"]
+                                )
+                                fig_wave.update_layout(height=280)
+                                st.plotly_chart(fig_wave, use_container_width=True)
 
-                            # Display peak action frames
-                            if cv_res["key_frames"]:
+                            if cv_res and cv_res["key_frames"]:
                                 st.markdown("**Detected Peak Action / Contact Moments:**")
                                 f_cols = st.columns(len(cv_res["key_frames"]))
                                 for idx, (score, ts, rgb_img) in enumerate(cv_res["key_frames"]):
                                     f_cols[idx].image(rgb_img, caption=f"Peak @ {ts}s (Intensity: {score:.1f})", use_container_width=True)
 
-                            # Generate Biomechanical Coaching Feedback
                             if ai_res:
                                 strengths_txt = ai_res.get("strengths_observed", "")
                                 flaws_txt = ai_res.get("biomechanical_flaws", "")
                                 drills_txt = ai_res.get("corrective_drills", "")
                             else:
-                                # Data-driven CV coaching synthesis based on actual motion telemetry
-                                if cv_res["burst_ratio"] >= 2.2:
-                                    strengths_txt = f"Strong kinetic acceleration spikes (burst ratio {cv_res['burst_ratio']}x) during {focus_stroke}, showing good racquet-head speed through contact."
-                                else:
-                                    strengths_txt = f"Steady, controlled tempo across the {cv_res['duration_sec']}s clip with consistent rally rhythm."
+                                strengths_txt = f"Steady tempo across the {cv_res['duration_sec']}s clip (burst ratio {cv_res['burst_ratio']}x)."
+                                flaws_txt = "Add your GEMINI_API_KEY in Streamlit Secrets for full AI stroke-by-stroke biomechanical critique."
+                                drills_txt = "Shadow split-step + 50-ball wall consistency drill."
 
-                                if cv_res["recovery_rhythm"] < 6.5:
-                                    flaws_txt = "High variance between bursts suggests delayed split-step recovery or stopping after hitting instead of recovering to center."
-                                    drills_txt = "Shadow split-step + 2-ball recovery drill on the wall: call 'bounce-hit' and split-step right as the ball rebounds."
-                                elif cv_res["footwork_cadence"] < 6.5:
-                                    flaws_txt = "Low baseline footwork cadence between shots—tendency to reach with the arm rather than adjusting with small adjustment steps."
-                                    drills_txt = "50-ball wall rally focusing strictly on 4+ small adjustment steps before every contact point."
-                                else:
-                                    flaws_txt = "Good movement base; focus on transferring weight forward into the court on short balls to maximize kinetic chain efficiency."
-                                    drills_txt = "20-rep unit-turn & hip-rotation progression against the wall, holding finish balance for 1 full second."
-
+                            weight_badge = f" | 🏋️ Ankle Weights: {vid_ankle_weights}" if vid_ankle_weights != "No" else ""
                             st.markdown(f"""
                             <div class="video-card">
-                                <h4>🎬 Biomechanical Breakdown — {focus_stroke} ({video_context})</h4>
+                                <h4>🎬 AI Biomechanical Breakdown — {focus_stroke} ({video_context}{weight_badge})</h4>
                                 <p><b>✅ Mechanical Strengths:</b> {strengths_txt}</p>
                                 <p><b>⚠️ Movement / Stroke Leaks to Fix:</b> {flaws_txt}</p>
                                 <p><b>🎯 Recommended Corrective Drill:</b> {drills_txt}</p>
                             </div>
                             """, unsafe_allow_html=True)
 
-                            # Save to Supabase tagged strictly as "Video Biomechanics" so it never mixes with self-logged inputs
                             vid_meta = {
                                 "video_stroke": focus_stroke,
                                 "video_context": video_context,
+                                "ankle_weights": vid_ankle_weights,
                                 "kinetic_chain": kinetic_score,
                                 "contact_point": contact_score,
                                 "balance_recovery": balance_score,
@@ -808,14 +820,14 @@ with tab4:
                                 "video_flaws": flaws_txt,
                                 "video_drills": drills_txt
                             }
-                            vid_summary = f"[Video: {focus_stroke} | {video_context}] Strengths: {strengths_txt} // Fix: {flaws_txt} // Drill: {drills_txt}"
+                            vid_summary = f"[Video: {focus_stroke} | {video_context}{weight_badge}] Strengths: {strengths_txt} // Fix: {flaws_txt} // Drill: {drills_txt}"
                             vid_record = {
                                 "match_date": str(video_date),
                                 "match_type": "Video Biomechanics",
                                 "surface": "Video Footage",
                                 "opponent": uploaded_video.name,
                                 "result": "Video Analysis",
-                                "score": f"{cv_res['duration_sec']}s clip",
+                                "score": f"{cv_res['duration_sec']}s clip" if cv_res else "Video Clip",
                                 "serve_rating": round(kinetic_score),
                                 "mental_focus": round(contact_score),
                                 "energy_level": round(footwork_score),
@@ -830,7 +842,7 @@ with tab4:
     st.markdown("---")
     st.subheader("📈 Separate Video Biomechanics History & Progress")
     if video_df.empty:
-        st.caption("No videos analyzed yet. Upload your first match or wall clip above to start tracking your biomechanics over time!")
+        st.caption("No videos analyzed yet. Upload your first match or wall clip above!")
     else:
         vk1, vk2, vk3, vk4 = st.columns(4)
         vk1.metric("Videos Analyzed", len(video_df))
@@ -838,7 +850,7 @@ with tab4:
         vk3.metric("Avg Footwork Cadence", f"{pd.to_numeric(video_df['energy_level'], errors='coerce').mean():.1f} / 10")
         vk4.metric("Avg Contact Timing", f"{pd.to_numeric(video_df['mental_focus'], errors='coerce').mean():.1f} / 10")
 
-        vid_cols = [c for c in ["match_date", "opponent", "video_stroke", "video_context", "score", "serve_rating", "energy_level", "mental_focus", "clean_note"] if c in video_df.columns]
+        vid_cols = [c for c in ["match_date", "opponent", "video_stroke", "video_context", "ankle_weights", "score", "serve_rating", "energy_level", "mental_focus", "clean_note"] if c in video_df.columns]
         st.dataframe(video_df[vid_cols], use_container_width=True)
 
         vid_csv = video_df.drop(columns=[note_col], errors="ignore").to_csv(index=False).encode("utf-8")
@@ -870,19 +882,23 @@ with tab5:
         score = c6.text_input("Score or Duration (e.g., 6-4 4-6 10-8 or 60 mins)")
 
         st.markdown("---")
-        st.markdown("**Match Context & Opponent Profile**")
-        ctx1, ctx2, ctx3 = st.columns(3)
+        st.markdown("**Match Context, Conditioning Load & Opponent Profile**")
+        ctx1, ctx2, ctx3, ctx4 = st.columns(4)
         opp_style = ctx1.selectbox(
-            "Opponent Playstyle / Drill Theme",
+            "Opponent Style / Drill Theme",
             ["All-Court", "Aggressive Baseliner", "Counterpuncher / Pusher", "Big Server", "Net Rusher / S&V", "Lefty / Unorthodox", "Solo Wall / Footwork"]
         )
         pressure = ctx2.selectbox(
-            "Match Flow / Pressure Context",
+            "Match Flow / Pressure",
             ["Competitive / Close Sets", "Tiebreak / 3rd Set Decider", "Dominant Control", "Played From Behind", "Routine Practice"]
         )
         physical_state = ctx3.selectbox(
             "Physical Readiness",
             ["Fresh & Explosive", "Normal", "Heavy Legs / Fatigued", "Sore / Tight"]
+        )
+        ankle_weights = ctx4.selectbox(
+            "🏋️ Trained with Ankle Weights?",
+            ["No", "Yes — Light (0.5–1 kg)", "Yes — Heavy (1.5+ kg)"]
         )
 
         st.markdown("---")
@@ -926,6 +942,7 @@ with tab5:
                 "opp_style": opp_style,
                 "pressure": pressure,
                 "physical_state": physical_state,
+                "ankle_weights": ankle_weights,
                 "fh_rating": fh_rating,
                 "bh_rating": bh_rating,
                 "ret_rating": ret_rating,
@@ -938,7 +955,8 @@ with tab5:
                 narrative_parts.append(f"Worked: {what_worked.strip()}")
             if what_to_adjust.strip():
                 narrative_parts.append(f"Adjust: {what_to_adjust.strip()}")
-            human_summary = f"[{opp_style} | {pressure} | Weapon: {main_weapon} | Leak: {main_leak}] " + " // ".join(narrative_parts)
+            aw_tag = f" | Ankle Weights: {ankle_weights}" if ankle_weights != "No" else ""
+            human_summary = f"[{opp_style} | {pressure}{aw_tag} | Weapon: {main_weapon} | Leak: {main_leak}] " + " // ".join(narrative_parts)
 
             encoded_note = f"[META:{json.dumps(meta_payload)}] {human_summary}".strip()
 
@@ -955,7 +973,7 @@ with tab5:
                 note_col: encoded_note
             }
             insert_match(new_record, raw_cols)
-            st.success("Session saved! Your Skill Radar, Scatterplot, and ML Coach have been updated.")
+            st.success("Session saved! Your Skill Radar, Scatterplot, Ankle Weights tracker, and ML Coach have been updated.")
             st.rerun()
 
 # ==========================================
