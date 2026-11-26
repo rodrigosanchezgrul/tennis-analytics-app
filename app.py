@@ -530,16 +530,22 @@ with tab1:
                 scorecard["Win-Loss Gap"] = (scorecard["Win Avg"] - scorecard["Loss Avg"]).round(1)
             st.dataframe(scorecard, use_container_width=True, hide_index=True)
 
-            best_skill = scorecard.loc[scorecard["Season Avg"].idxmax(), "Skill Dimension"]
-            best_val = scorecard["Season Avg"].max()
-            st.success(f"🏆 **Highest Rated Skill:** **{best_skill}** ({best_val:.1f} / 10)")
-            if "Win-Loss Gap" in scorecard.columns and scorecard["Win-Loss Gap"].notna().any():
-                biggest_gap_row = scorecard.loc[scorecard["Win-Loss Gap"].idxmax()]
-                st.warning(
-                    f"⚡ **Biggest Win/Loss Separator:** **{biggest_gap_row['Skill Dimension']}** "
-                    f"drops by **{biggest_gap_row['Win-Loss Gap']:.1f} pts** when you lose."
-                )
-
+            for _sc_col in ["Season Avg", "Win Avg", "Loss Avg", "Win-Loss Gap"]:
+                if _sc_col in scorecard.columns:
+                    scorecard[_sc_col] = pd.to_numeric(scorecard[_sc_col], errors="coerce")
+            valid_sc = scorecard.dropna(subset=["Season Avg"]).copy()
+            if not valid_sc.empty:
+                best_skill = valid_sc.loc[valid_sc["Season Avg"].idxmax(), "Skill Dimension"]
+                best_val = valid_sc["Season Avg"].max()
+                st.success(f"🏆 **Highest Rated Skill:** **{best_skill}** ({best_val:.1f} / 10)")
+                if "Win-Loss Gap" in scorecard.columns and valid_sc["Win-Loss Gap"].notna().any():
+                    biggest_gap_row = valid_sc.loc[valid_sc["Win-Loss Gap"].idxmax()]
+                    st.warning(
+                        f"⚡ **Biggest Win/Loss Separator:** **{biggest_gap_row['Skill Dimension']}** "
+                        f"drops by **{biggest_gap_row['Win-Loss Gap']:.1f} pts** when you lose."
+                    )
+            else:
+                st.info("Log sessions with stroke ratings to populate your 11-Stroke Scorecard.")
         st.markdown("---")
         st.subheader("🔵 Multi-Factor Correlation Scatterplot")
         sc1, sc2, sc3 = st.columns(3)
