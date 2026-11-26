@@ -1288,28 +1288,162 @@ with tab6:
 
 
 # ==========================================
-# TAB 7: PRE-MATCH OPPONENT SCOUTING (100% DATA-DRIVEN)
+# TAB 7: PRE-MATCH OPPONENT SCOUTING (VISUAL & SMART MERGE)
 # ==========================================
 with tab7:
-    st.subheader("?? Pre-Match Opponent Scouting & Head-to-Head History")
-    known_opps = sorted([
-        o for o in df["opponent"].dropna().unique()
-        if str(o).strip() not in ["", "Unknown", "Wall", "Practice", "nan"]
-    ]) if (not df.empty and "opponent" in df.columns) else []
+    st.subheader("?? Pre-Match Opponent Scouting & Visual Matchup Lab")
 
-    if not known_opps:
-        st.info("Log matches with opponent names to unlock Head-to-Head scouting cards.")
+    import unicodedata
+
+    def normalize_opp_name(raw_name):
+        s = str(raw_name).strip()
+        if not s or s.lower() in ["unknown", "wall", "practice", "nan", "none"]:
+            return None
+        # Strip accents and lowercase for canonical matching
+        no_acc = "".join(c for c in unicodedata.normalize("NFD", s) if unicodedata.category(c) != "Mn").lower().strip()
+        # Alias & typo grouping rules
+        if "alex" in no_acc and ("bigote" in no_acc or "mustache" in no_acc):
+            return "Alex Bigotes"
+        if "andres" in no_acc and "jimen" in no_acc:
+            return "Andr?s Jim?nez"
+        if no_acc == "ivan" or no_acc.startswith("ivan "):
+            return "Iv?n"
+        # Clean display title while keeping distinct people separate
+        return " ".join(w.capitalize() for w in s.split())
+
+    if df.empty or "opponent" not in df.columns:
+        st.info("Log matches with opponent names to unlock Head-to-Head scouting charts.")
     else:
-        selected_opp = st.selectbox("Select Opponent Before Stepping on Court", known_opps)
-        h2h_df = df[df["opponent"] == selected_opp].sort_values(by="match_date", ascending=False)
-        h2h_wins = len(h2h_df[h2h_df["Outcome"] == "Win"])
-        h2h_losses = len(h2h_df[h2h_df["Outcome"] == "Loss"])
+        scout_df = df.copy()
+        scout_df["Clean Opponent"] = scout_df["opponent"].apply(normalize_opp_name)
+        scout_df = scout_df[scout_df["Clean Opponent"].notna()].copy()
 
-        hk1, hk2, hk3 = st.columns(3)
-        hk1.metric("Matches Played", len(h2h_df))
-        hk2.metric("Record vs. Opponent", f"{h2h_wins}W - {h2h_losses}L")
-        hk3.metric("Avg Serve / Focus", f"{pd.to_numeric(h2h_df['serve_rating'], errors='coerce').mean():.1f} / {pd.to_numeric(h2h_df['mental_focus'], errors='coerce').mean():.1f}")
+        # Sort opponents by most matches played first
+        opp_counts = scout_df["Clean Opponent"].value_counts()
+        known_opps = opp_counts.index.tolist()
 
-        for _, r in h2h_df.iterrows():
-            dt_str = r["match_date"].strftime("%Y-%m-%d") if pd.notna(r.get("match_date")) else "Past"
-            st.info(f"**{dt_str}** | **{r.get('result', '')}** ({r.get('score', '')}) ? {r.get('clean_note', 'No notes.')}")
+        if not known_opps:
+            st.info("Log matches with opponent names to unlock Head-to-Head scouting charts.")
+        else:
+            selected_opp = st.selectbox(
+                "Select Opponent Before Stepping on Court",
+                known_opps,
+                format_func=lambda x: f"{x} ({opp_counts[x]} {'match' if opp_counts[x] == 1 else 'matches'})"
+            )
+
+            h2h_df = scout_df[scout_df["Clean Opponent"] == selected_opp].sort_values(by="match_date", ascending=True).copy()
+            h2h_wins = len(h2h_df[h2h_df["Outcome"] == "Win"])
+            h2h_losses = len(h2h_df[h2h_df["Outcome"] == "Loss"])
+            decided = h2h_wins + h2h_losses
+            win_pct = (h2h_wins / decided * 100) if decided > 0 else 0.0
+
+            hk1, hk2, hk3, hk4 = st.columns(4)
+            hk1.metric("Total Meetings", len(h2h_df))
+            hk2.metric("H2H Record", f"{h2h_wins}W - {h2h_losses}L")
+            hk3.metric("Win Rate", f"{win_pct:.0f}%" if decided > 0 else "N/A")
+            hk4.metric("Avg Serve / Focus", f"{pd.to_numeric(h2h_df['serve_rating'], errors='coerce').mean():.1f} / {pd.to_numeric(h2h_df['mental_focus'], errors='coerce').mean():.1f}")
+
+            st.markdown("---")
+            g_col1, g_col2 = st.columns(2)
+
+            # Graph 1: Radar Chart comparing your performance vs this opponent against your Season Average
+            with g_col1:
+                skill_map = {
+                    "Serve": "serve_rating",
+                    "Mental Focus": "mental_focus",
+                    "Forehand": "fh_rating",
+                    "Backhand": "bh_rating",
+                    "Return": "return_rating",
+                    "Volley": "volley_rating",
+                    "Movement": "movement_rating",
+                    "Slice": "slice_rating"
+                }
+                avail_labels, h2h_vals, season_vals = [], [], []
+                for lbl, col_name in skill_map.items():
+                    if col_name in h2h_df.columns:
+                        v_opp = pd.to_numeric(h2h_df[col_name], errors="coerce").mean()
+                        v_all = pd.to_numeric(df[col_name], errors="coerce").mean()
+                        if pd.notna(v_opp) and pd.notna(v_all):
+                            avail_labels.append(lbl)
+                            h2h_vals.append(round(float(v_opp), 2))
+                            season_vals.append(round(float(v_all), 2))
+
+                if len(avail_labels) >= 3:
+                    fig_h2h_radar = go.Figure()
+                    fig_h2h_radar.add_trace(go.Scatterpolar(
+                        r=season_vals + [season_vals[0]],
+                        theta=avail_labels + [avail_labels[0]],
+                        fill="toself",
+                        name="Your Season Avg",
+                        line=dict(color="#95a5a6", dash="dash"),
+                        opacity=0.45
+                    ))
+                    fig_h2h_radar.add_trace(go.Scatterpolar(
+                        r=h2h_vals + [h2h_vals[0]],
+                        theta=avail_labels + [avail_labels[0]],
+                        fill="toself",
+                        name=f"vs. {selected_opp}",
+                        line=dict(color="#2ecc71" if h2h_wins >= h2h_losses else "#e74c3c", width=3)
+                    ))
+                    fig_h2h_radar.update_layout(
+                        polar=dict(radialaxis=dict(visible=True, range=[0, 10])),
+                        title=f"Your Skill Profile vs. {selected_opp}",
+                        template="plotly_dark",
+                        height=380,
+                        margin=dict(l=40, r=40, t=55, b=35)
+                    )
+                    st.plotly_chart(fig_h2h_radar, use_container_width=True)
+
+            # Graph 2: Match-by-Match Serve & Mental Focus Trend vs this Opponent
+            with g_col2:
+                h2h_df["Date Label"] = h2h_df["match_date"].dt.strftime("%Y-%m-%d").fillna("Session")
+                h2h_df["Serve Num"] = pd.to_numeric(h2h_df["serve_rating"], errors="coerce")
+                h2h_df["Focus Num"] = pd.to_numeric(h2h_df["mental_focus"], errors="coerce")
+
+                fig_h2h_trend = go.Figure()
+                fig_h2h_trend.add_trace(go.Scatter(
+                    x=h2h_df["Date Label"],
+                    y=h2h_df["Serve Num"],
+                    mode="lines+markers",
+                    name="Serve Rating",
+                    line=dict(color="#3498db", width=3),
+                    marker=dict(size=10)
+                ))
+                fig_h2h_trend.add_trace(go.Scatter(
+                    x=h2h_df["Date Label"],
+                    y=h2h_df["Focus Num"],
+                    mode="lines+markers",
+                    name="Mental Focus",
+                    line=dict(color="#f1c40f", width=3),
+                    marker=dict(size=10)
+                ))
+                fig_h2h_trend.update_layout(
+                    title=f"Serve & Mental Focus Trend vs. {selected_opp}",
+                    yaxis=dict(range=[0, 10.5], title="Rating (1-10)"),
+                    xaxis_title="Match Date",
+                    template="plotly_dark",
+                    height=380,
+                    margin=dict(l=40, r=25, t=55, b=35)
+                )
+                st.plotly_chart(fig_h2h_trend, use_container_width=True)
+
+            # Compact, scannable summary table + optional collapsible raw notes
+            st.markdown("#### ?? Match Summary")
+            summary_cols = [c for c in ["Date Label", "Outcome", "score", "serve_rating", "mental_focus"] if c in h2h_df.columns]
+            st.dataframe(
+                h2h_df[summary_cols].rename(columns={
+                    "Date Label": "Date", "Outcome": "Result", "score": "Score",
+                    "serve_rating": "Serve", "mental_focus": "Mental Focus"
+                }),
+                use_container_width=True,
+                hide_index=True
+            )
+
+            with st.expander("?? View Full Match Notes (Optional)"):
+                for _, r in h2h_df.sort_values(by="match_date", ascending=False).iterrows():
+                    dt_str = r["match_date"].strftime("%Y-%m-%d") if pd.notna(r.get("match_date")) else "Past"
+                    raw_note = str(r.get("clean_note", "")).strip()
+                    # Clean out raw timestamp prefixes if present
+                    raw_note = re.sub(r"^\(\d{1,2}/\d{1,2}/\d{4}[^)]*\)\s*\??\s*", "", raw_note)
+                    st.markdown(f"**{dt_str} ? {r.get('Outcome', '')}**")
+                    st.caption(raw_note if raw_note else "No notes recorded.")
