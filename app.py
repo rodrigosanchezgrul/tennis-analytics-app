@@ -396,6 +396,16 @@ def enrich_granular_strokes(dataframe):
 if not df.empty:
     df = enrich_granular_strokes(df)
 
+ALL_11_STROKE_MAP = {label: col for label, col, _, _ in GRANULAR_STROKES}
+ALL_11_STROKE_MAP["Mental Focus"] = "mental_focus"
+ALL_11_STROKE_COLS = list(ALL_11_STROKE_MAP.values())
+
+for _sc in ALL_11_STROKE_COLS:
+    if _sc not in df.columns:
+        df[_sc] = np.nan
+    df[_sc] = pd.to_numeric(df[_sc], errors="coerce")
+
+
 tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
 
     "🕸️ Skill Radar & Scatter Lab",
@@ -441,10 +451,7 @@ with tab1:
         radar_df["Attack / Overall Index"] = radar_df.mean(axis=1)
         radar_df["Outcome"] = df["Outcome"]
 
-        axes = [
-            "Serve Quality", "Return Quality", "Forehand Quality", "Backhand Quality",
-            "Net & Conversion", "Baseline Battle (Focus)", "Physical Steal (Energy)", "Attack / Overall Index"
-        ]
+        axes = list(ALL_11_STROKE_MAP.keys())
 
         season_avg = [radar_df[a].mean() for a in axes]
         wins_df = radar_df[radar_df["Outcome"] == "Win"]
@@ -1178,18 +1185,7 @@ with tab5:
 
         submitted = st.form_submit_button("Save Detailed Session", use_container_width=True)
         if submitted:
-            meta_payload = {
-                "opp_style": opp_style,
-                "pressure": pressure,
-                "physical_state": physical_state,
-                "ankle_weights": ankle_weights,
-                "fh_rating": fh_rating,
-                "bh_rating": bh_rating,
-                "ret_rating": ret_rating,
-                "net_rating": net_rating,
-                "main_weapon": main_weapon,
-                "main_leak": main_leak
-            }
+            meta_payload = ALL_11_STROKE_MAP
             narrative_parts = []
             if what_worked.strip():
                 narrative_parts.append(f"Worked: {what_worked.strip()}")
@@ -1201,19 +1197,7 @@ with tab5:
             encoded_note = f"[META:{json.dumps(meta_payload)}] {human_summary}".strip()
             opp_clean = opponent.strip() if opponent.strip() else ("Wall" if match_type == "Wall Session" else "Practice")
 
-            new_record = {
-                "match_date": str(session_date),
-                "match_type": match_type,
-                "surface": surface,
-                "opponent_name": opp_clean,
-                "opponent": opp_clean,
-                "result": result,
-                "score": score,
-                "serve_rating": serve_rating,
-                "mental_focus": mental_focus,
-                "energy_level": energy_level,
-                note_col: encoded_note
-            }
+            new_record = ALL_11_STROKE_MAP
             insert_match(new_record, valid_db_cols)
             st.success("Session saved permanently to Supabase! Available immediately on your phone and PC.")
             st.rerun()
@@ -1354,19 +1338,7 @@ with tab6:
 
                         encoded_note = f"[META:{json.dumps(merged_meta)}] {clean_body}".strip() if merged_meta else clean_body
 
-                        base_rec = {
-                            "match_date": clean_dt,
-                            "match_type": extract_str(row, col_type, "Singles Match"),
-                            "surface": extract_str(row, col_surf, "Hard"),
-                            "opponent_name": opp_val,
-                            "opponent": opp_val,
-                            "result": extract_str(row, col_res, "N/A (Training)"),
-                            "score": extract_str(row, col_score, ""),
-                            "serve_rating": int(round(serve_val)) if serve_val is not None else row_mean,
-                            "mental_focus": int(round(focus_val)) if focus_val is not None else row_mean,
-                            "energy_level": int(round(energy_val)) if energy_val is not None else row_mean,
-                            note_col: encoded_note
-                        }
+                        base_rec = ALL_11_STROKE_MAP
                         records_to_insert.append(base_rec)
 
                     bulk_insert_matches(records_to_insert, valid_db_cols)
@@ -1545,10 +1517,7 @@ with tab7:
             st.markdown("#### Match Summary")
             summary_cols = [c for c in ["Date Label", "Outcome", "score", "serve_rating", "mental_focus"] if c in h2h_df.columns]
             st.dataframe(
-                h2h_df[summary_cols].rename(columns={
-                    "Date Label": "Date", "Outcome": "Result", "score": "Score",
-                    "serve_rating": "Serve", "mental_focus": "Mental Focus"
-                }),
+                h2h_df[summary_cols].rename(columns=ALL_11_STROKE_MAP),
                 use_container_width=True,
                 hide_index=True
             )
