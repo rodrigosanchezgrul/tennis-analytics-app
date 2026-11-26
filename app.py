@@ -487,6 +487,51 @@ with tab1:
 # ==========================================
 # TAB 2: VOLUME, WINS, ANKLE WEIGHTS & LOSS REASONS
 # ==========================================
+
+        st.markdown("---")
+        st.subheader("?? All Skills Over Time (Periodic Progression)")
+        st.caption("Click any skill in the legend on the right to isolate or compare specific strokes over time.")
+        if not df.empty and "match_date" in df.columns:
+            prog_df = df.sort_values(by="match_date", ascending=True).copy()
+            prog_df["Date_Str"] = prog_df["match_date"].dt.strftime("%Y-%m-%d").fillna("Session")
+            prog_df["Session_Label"] = [f"#{i+1} ({d})" for i, d in enumerate(prog_df["Date_Str"])]
+
+            all_skills_cfg = [
+                ("Serve", "serve_rating", "#3498db"),
+                ("Forehand", "fh_rating", "#2ecc71"),
+                ("Backhand", "bh_rating", "#e67e22"),
+                ("Return", "return_rating", "#9b59b6"),
+                ("Volley", "volley_rating", "#1abc9c"),
+                ("Movement", "movement_rating", "#e74c3c"),
+                ("Slice", "slice_rating", "#95a5a6"),
+                ("Mental Focus", "mental_focus", "#f1c40f")
+            ]
+
+            fig_all_skills = go.Figure()
+            for s_label, s_col, s_color in all_skills_cfg:
+                if s_col in prog_df.columns:
+                    vals = pd.to_numeric(prog_df[s_col], errors="coerce")
+                    if vals.notna().any():
+                        fig_all_skills.add_trace(go.Scatter(
+                            x=prog_df["Session_Label"],
+                            y=vals,
+                            mode="lines+markers",
+                            name=s_label,
+                            connectgaps=True,
+                            line=dict(color=s_color, width=2.5),
+                            marker=dict(size=7)
+                        ))
+
+            fig_all_skills.update_layout(
+                yaxis=dict(range=[0, 10.5], title="Skill Rating (1-10)"),
+                xaxis_title="Chronological Session",
+                template="plotly_dark",
+                height=430,
+                hovermode="x unified",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+            )
+            st.plotly_chart(fig_all_skills, use_container_width=True)
+
 with tab2:
     if df.empty:
         st.info("Log sessions first to see your training volume and loss diagnostics.")
@@ -1395,50 +1440,59 @@ with tab7:
                     )
                     st.plotly_chart(fig_h2h_radar, use_container_width=True)
 
-            # Graph 2: Match-by-Match Serve & Mental Focus Trend vs this Opponent
+            # Graph 2: Match-by-Match ALL 8 SKILLS Trend vs this Opponent
             with g_col2:
                 h2h_df["Date Label"] = h2h_df["match_date"].dt.strftime("%Y-%m-%d").fillna("Session")
-                h2h_df["Serve Num"] = pd.to_numeric(h2h_df["serve_rating"], errors="coerce")
-                h2h_df["Focus Num"] = pd.to_numeric(h2h_df["mental_focus"], errors="coerce")
+                h2h_df["Meeting Label"] = [f"#{i+1} ({d})" for i, d in enumerate(h2h_df["Date Label"])]
+
+                all_skills_h2h = [
+                    ("Serve", "serve_rating", "#3498db"),
+                    ("Forehand", "fh_rating", "#2ecc71"),
+                    ("Backhand", "bh_rating", "#e67e22"),
+                    ("Return", "return_rating", "#9b59b6"),
+                    ("Volley", "volley_rating", "#1abc9c"),
+                    ("Movement", "movement_rating", "#e74c3c"),
+                    ("Slice", "slice_rating", "#95a5a6"),
+                    ("Mental Focus", "mental_focus", "#f1c40f")
+                ]
 
                 fig_h2h_trend = go.Figure()
-                fig_h2h_trend.add_trace(go.Scatter(
-                    x=h2h_df["Date Label"],
-                    y=h2h_df["Serve Num"],
-                    mode="lines+markers",
-                    name="Serve Rating",
-                    line=dict(color="#3498db", width=3),
-                    marker=dict(size=10)
-                ))
-                fig_h2h_trend.add_trace(go.Scatter(
-                    x=h2h_df["Date Label"],
-                    y=h2h_df["Focus Num"],
-                    mode="lines+markers",
-                    name="Mental Focus",
-                    line=dict(color="#f1c40f", width=3),
-                    marker=dict(size=10)
-                ))
+                for s_label, s_col, s_color in all_skills_h2h:
+                    if s_col in h2h_df.columns:
+                        s_vals = pd.to_numeric(h2h_df[s_col], errors="coerce")
+                        if s_vals.notna().any():
+                            fig_h2h_trend.add_trace(go.Scatter(
+                                x=h2h_df["Meeting Label"],
+                                y=s_vals,
+                                mode="lines+markers",
+                                name=s_label,
+                                connectgaps=True,
+                                line=dict(color=s_color, width=2.5),
+                                marker=dict(size=9)
+                            ))
+
                 fig_h2h_trend.update_layout(
-                    title=f"Serve & Mental Focus Trend vs. {selected_opp}",
+                    title=f"All 8 Skills Progression vs. {selected_opp}",
                     yaxis=dict(range=[0, 10.5], title="Rating (1-10)"),
-                    xaxis_title="Match Date",
+                    xaxis_title="Match vs. Opponent (Click legend to filter)",
                     template="plotly_dark",
-                    height=380,
+                    height=410,
+                    hovermode="x unified",
                     margin=dict(l=40, r=25, t=55, b=35)
                 )
                 st.plotly_chart(fig_h2h_trend, use_container_width=True)
 
             # Compact, scannable summary table + optional collapsible raw notes
 
-            if "match_type" in h2h_df.columns:
+            if "match_type" in h2h_df.columns and h2h_df["match_type"].nunique() > 1:
                 fmt_counts = h2h_df["match_type"].fillna("Match").value_counts().reset_index()
                 fmt_counts.columns = ["Format", "Sessions"]
-                fig_fmt = px.bar(
-                    fmt_counts, x="Sessions", y="Format", orientation="h",
-                    color="Format", title=f"Session Formats Played with {selected_opp}",
+                fig_fmt = px.pie(
+                    fmt_counts, values="Sessions", names="Format", hole=0.5,
+                    title=f"Session Formats Played with {selected_opp}",
                     template="plotly_dark"
                 )
-                fig_fmt.update_layout(height=230, showlegend=False, margin=dict(l=20, r=20, t=40, b=20))
+                fig_fmt.update_layout(height=250, margin=dict(l=20, r=20, t=40, b=20))
                 st.plotly_chart(fig_fmt, use_container_width=True)
 
             st.markdown("#### Match Summary")
@@ -1452,11 +1506,11 @@ with tab7:
                 hide_index=True
             )
 
-            with st.expander("?? View Full Match Notes (Optional)"):
+            with st.expander("View Full Match Notes (Optional)"):
                 for _, r in h2h_df.sort_values(by="match_date", ascending=False).iterrows():
                     dt_str = r["match_date"].strftime("%Y-%m-%d") if pd.notna(r.get("match_date")) else "Past"
                     raw_note = str(r.get("clean_note", "")).strip()
                     # Clean out raw timestamp prefixes if present
-                    raw_note = re.sub(r"^\(\d{1,2}/\d{1,2}/\d{4}[^)]*\)\s*\??\s*", "", raw_note)
+                    raw_note = re.sub(r"^\(\d{1,2}/\d{1,2}/\d{4}[^)]*\)\s*\\s*", "", raw_note)
                     st.markdown(f"**{dt_str} ? {r.get('Outcome', '')}**")
                     st.caption(raw_note if raw_note else "No notes recorded.")
