@@ -331,13 +331,15 @@ df, video_df, raw_db_cols = load_data()
 valid_db_cols = get_table_columns(raw_db_cols)
 note_col = next((c for c in ["tactical_note", "tactical_notes", "notes", "note", "reflection", "comments"] if c in valid_db_cols), "tactical_note")
 
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+
     "🕸️ Skill Radar & Scatter Lab",
     "📊 Volume, Wins & Loss Reasons",
     "🤖 AI Coach & ML Models",
     "🎥 Video Biomechanics Lab",
     "➕ Log Detailed Session",
-    "📁 CSV Reset, Mapper & Database"
+    "📁 CSV Reset, Mapper & Database",
+    "?? Pre-Match Scouting"
 ])
 
 # ==========================================
@@ -625,6 +627,90 @@ with tab2:
 # ==========================================
 # TAB 3: AI COACH & ML MODELS
 # ==========================================
+
+        st.markdown("---")
+        st.subheader("?? Match Momentum: Wins & Defeats (Ups & Downs)")
+        match_hist = df[df["Outcome"].isin(["Win", "Loss"])].copy()
+        if not match_hist.empty:
+            match_hist = match_hist.sort_values(by="match_date", ascending=True).reset_index(drop=True)
+            match_hist["Match #"] = match_hist.index + 1
+            match_hist["Delta"] = np.where(match_hist["Outcome"] == "Win", 1, -1)
+            match_hist["Momentum Score"] = match_hist["Delta"].cumsum()
+
+            fig_mom = go.Figure()
+            fig_mom.add_trace(go.Scatter(
+                x=match_hist["Match #"],
+                y=match_hist["Momentum Score"],
+                mode="lines+markers",
+                line=dict(color="#3498db", width=3),
+                marker=dict(
+                    size=12,
+                    color=np.where(match_hist["Outcome"] == "Win", "#2ecc71", "#e74c3c"),
+                    line=dict(width=1.5, color="#ffffff")
+                ),
+                text=match_hist["opponent"] + " (" + match_hist["Outcome"] + " " + match_hist["score"].fillna("") + ")",
+                hovertemplate="<b>Match #%{x}</b><br>%{text}<br>Net Momentum: %{y}<extra></extra>"
+            ))
+            fig_mom.add_hline(y=0, line_dash="dash", line_color="gray", annotation_text="Even (.500)")
+            fig_mom.update_layout(
+                xaxis_title="Chronological Match Number (Green = Win, Red = Loss)",
+                yaxis_title="Net Momentum (+1 Win / -1 Loss)",
+                template="plotly_dark",
+                height=380
+            )
+            st.plotly_chart(fig_mom, use_container_width=True)
+        else:
+            st.info("Log matches with 'Win' or 'Loss' results to see your ups-and-downs momentum line.")
+
+        st.markdown("---")
+        st.subheader("?? Wall Practice Breakdown: What You Practiced")
+        wall_sessions = df[
+            df["match_type"].astype(str).str.contains("Wall", case=False, na=False) |
+            df["opponent"].astype(str).str.contains("Wall|Pared", case=False, na=False)
+        ].copy()
+
+        if wall_sessions.empty:
+            st.info("No Wall sessions logged yet. Log a 'Wall Session' in Tab 5 to see your wall drill breakdown.")
+        else:
+            wall_topics = []
+            wall_kw_map = {
+                "Volleys": ["volley", "volea", "red"],
+                "Playing in Front / Early": ["front", "early", "adelante", "temprano", "inside"],
+                "Super Fast Balls / Pace": ["fast", "hard", "speed", "pace", "rapida", "r?pida", "fuerte", "velocidad"],
+                "Spin & Effect (Topspin/Slice)": ["spin", "effect", "topspin", "slice", "efecto", "liftado", "cortado"]
+            }
+
+            for _, wrow in wall_sessions.iterrows():
+                if "wall_drills" in wrow and isinstance(wrow["wall_drills"], list):
+                    wall_topics.extend(wrow["wall_drills"])
+                note_txt = f"{wrow.get('clean_note', '')} {wrow.get('score', '')}".lower()
+                for label, kws in wall_kw_map.items():
+                    if any(k in note_txt for k in kws):
+                        wall_topics.append(label)
+
+            if wall_topics:
+                wt_df = pd.Series(wall_topics).value_counts().reset_index()
+                wt_df.columns = ["Wall Drill Focus", "Sessions"]
+                w_c1, w_c2 = st.columns(2)
+                with w_c1:
+                    fig_wall_bar = px.bar(
+                        wt_df.sort_values("Sessions", ascending=True),
+                        x="Sessions", y="Wall Drill Focus", orientation="h",
+                        color="Sessions", color_continuous_scale="Blues",
+                        title="Wall Drills Practiced (Frequency)", template="plotly_dark"
+                    )
+                    fig_wall_bar.update_layout(height=340, showlegend=False)
+                    st.plotly_chart(fig_wall_bar, use_container_width=True)
+                with w_c2:
+                    fig_wall_pie = px.pie(
+                        wt_df, values="Sessions", names="Wall Drill Focus", hole=0.4,
+                        title="Wall Practice Share (%)", template="plotly_dark"
+                    )
+                    fig_wall_pie.update_layout(height=340)
+                    st.plotly_chart(fig_wall_pie, use_container_width=True)
+            else:
+                st.info("Select your wall drill focus (Volleys, Playing in Front, Fast Balls, Effect) when logging Wall Sessions to populate these charts.")
+
 with tab3:
     st.subheader("🤖 AI Coach Diagnostic & Machine Learning Lab")
     st.caption("Trains Random Forest, XGBoost, Logistic Regression, and Ridge Regression strictly on your logged matches.")
@@ -1199,3 +1285,31 @@ with tab6:
     st.subheader(f"Complete Self-Logged Session History ({len(df)} Rows)")
     st.dataframe(df.drop(columns=[note_col], errors="ignore"), use_container_width=True)
 
+
+
+# ==========================================
+# TAB 7: PRE-MATCH OPPONENT SCOUTING (100% DATA-DRIVEN)
+# ==========================================
+with tab7:
+    st.subheader("?? Pre-Match Opponent Scouting & Head-to-Head History")
+    known_opps = sorted([
+        o for o in df["opponent"].dropna().unique()
+        if str(o).strip() not in ["", "Unknown", "Wall", "Practice", "nan"]
+    ]) if (not df.empty and "opponent" in df.columns) else []
+
+    if not known_opps:
+        st.info("Log matches with opponent names to unlock Head-to-Head scouting cards.")
+    else:
+        selected_opp = st.selectbox("Select Opponent Before Stepping on Court", known_opps)
+        h2h_df = df[df["opponent"] == selected_opp].sort_values(by="match_date", ascending=False)
+        h2h_wins = len(h2h_df[h2h_df["Outcome"] == "Win"])
+        h2h_losses = len(h2h_df[h2h_df["Outcome"] == "Loss"])
+
+        hk1, hk2, hk3 = st.columns(3)
+        hk1.metric("Matches Played", len(h2h_df))
+        hk2.metric("Record vs. Opponent", f"{h2h_wins}W - {h2h_losses}L")
+        hk3.metric("Avg Serve / Focus", f"{pd.to_numeric(h2h_df['serve_rating'], errors='coerce').mean():.1f} / {pd.to_numeric(h2h_df['mental_focus'], errors='coerce').mean():.1f}")
+
+        for _, r in h2h_df.iterrows():
+            dt_str = r["match_date"].strftime("%Y-%m-%d") if pd.notna(r.get("match_date")) else "Past"
+            st.info(f"**{dt_str}** | **{r.get('result', '')}** ({r.get('score', '')}) ? {r.get('clean_note', 'No notes.')}")
