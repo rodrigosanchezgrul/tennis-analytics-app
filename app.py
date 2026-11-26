@@ -400,6 +400,13 @@ ALL_11_STROKE_MAP = {label: col for label, col, _, _ in GRANULAR_STROKES}
 ALL_11_STROKE_MAP["Mental Focus"] = "mental_focus"
 ALL_11_STROKE_COLS = list(ALL_11_STROKE_MAP.values())
 
+for _lbl, _col in ALL_11_STROKE_MAP.items():
+    if _col not in df.columns:
+        df[_col] = np.nan
+    df[_col] = pd.to_numeric(df[_col], errors="coerce")
+    df[_lbl] = df[_col]
+
+
 for _sc in ALL_11_STROKE_COLS:
     if _sc not in df.columns:
         df[_sc] = np.nan
@@ -453,6 +460,12 @@ with tab1:
 
         axes = list(ALL_11_STROKE_MAP.keys())
 
+        for _a in axes:
+            if _a not in radar_df.columns:
+                _mapped = ALL_11_STROKE_MAP.get(_a, _a)
+                radar_df[_a] = pd.to_numeric(radar_df[_mapped], errors="coerce") if _mapped in radar_df.columns else np.nan
+            else:
+                radar_df[_a] = pd.to_numeric(radar_df[_a], errors="coerce")
         season_avg = [radar_df[a].mean() for a in axes]
         wins_df = radar_df[radar_df["Outcome"] == "Win"]
         losses_df = radar_df[radar_df["Outcome"] == "Loss"]
