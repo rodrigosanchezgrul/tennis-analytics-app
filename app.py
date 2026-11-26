@@ -339,7 +339,7 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "🎥 Video Biomechanics Lab",
     "➕ Log Detailed Session",
     "📁 CSV Reset, Mapper & Database",
-    "?? Pre-Match Scouting"
+    "Pre-Match Scouting"
 ])
 
 # ==========================================
@@ -629,7 +629,7 @@ with tab2:
 # ==========================================
 
         st.markdown("---")
-        st.subheader("?? Match Momentum: Wins & Defeats (Ups & Downs)")
+        st.subheader("Match Momentum: Wins & Defeats (Ups & Downs)")
         match_hist = df[df["Outcome"].isin(["Win", "Loss"])].copy()
         if not match_hist.empty:
             match_hist = match_hist.sort_values(by="match_date", ascending=True).reset_index(drop=True)
@@ -663,7 +663,7 @@ with tab2:
             st.info("Log matches with 'Win' or 'Loss' results to see your ups-and-downs momentum line.")
 
         st.markdown("---")
-        st.subheader("?? Wall Practice Breakdown: What You Practiced")
+        st.subheader("Wall Practice Breakdown: What You Practiced")
         wall_sessions = df[
             df["match_type"].astype(str).str.contains("Wall", case=False, na=False) |
             df["opponent"].astype(str).str.contains("Wall|Pared", case=False, na=False)
@@ -1291,7 +1291,7 @@ with tab6:
 # TAB 7: PRE-MATCH OPPONENT SCOUTING (VISUAL & SMART MERGE)
 # ==========================================
 with tab7:
-    st.subheader("?? Pre-Match Opponent Scouting & Visual Matchup Lab")
+    st.subheader("Pre-Match Opponent Scouting & Visual Matchup Lab")
 
     import unicodedata
 
@@ -1299,17 +1299,18 @@ with tab7:
         s = str(raw_name).strip()
         if not s or s.lower() in ["unknown", "wall", "practice", "nan", "none"]:
             return None
-        # Strip accents and lowercase for canonical matching
-        no_acc = "".join(c for c in unicodedata.normalize("NFD", s) if unicodedata.category(c) != "Mn").lower().strip()
-        # Alias & typo grouping rules
-        if "alex" in no_acc and ("bigote" in no_acc or "mustache" in no_acc):
+        # Strip ALL accents so '?' never appears or breaks encoding
+        no_acc = "".join(c for c in unicodedata.normalize("NFD", s) if unicodedata.category(c) != "Mn")
+        low = no_acc.lower().strip()
+        if "alex" in low and ("bigote" in low or "mustache" in low):
             return "Alex Bigotes"
-        if "andres" in no_acc and "jimen" in no_acc:
-            return "Andr?s Jim?nez"
-        if no_acc == "ivan" or no_acc.startswith("ivan "):
-            return "Iv?n"
-        # Clean display title while keeping distinct people separate
-        return " ".join(w.capitalize() for w in s.split())
+        if "andres" in low and "jimen" in low:
+            return "Andres Jimenez"
+        if "pablo" in low and "pedro" in low:
+            return "Pablo Pedros Student"
+        if low == "ivan" or low.startswith("ivan "):
+            return "Ivan"
+        return " ".join(w.capitalize() for w in no_acc.split())
 
     if df.empty or "opponent" not in df.columns:
         st.info("Log matches with opponent names to unlock Head-to-Head scouting charts.")
@@ -1428,7 +1429,19 @@ with tab7:
                 st.plotly_chart(fig_h2h_trend, use_container_width=True)
 
             # Compact, scannable summary table + optional collapsible raw notes
-            st.markdown("#### ?? Match Summary")
+
+            if "match_type" in h2h_df.columns:
+                fmt_counts = h2h_df["match_type"].fillna("Match").value_counts().reset_index()
+                fmt_counts.columns = ["Format", "Sessions"]
+                fig_fmt = px.bar(
+                    fmt_counts, x="Sessions", y="Format", orientation="h",
+                    color="Format", title=f"Session Formats Played with {selected_opp}",
+                    template="plotly_dark"
+                )
+                fig_fmt.update_layout(height=230, showlegend=False, margin=dict(l=20, r=20, t=40, b=20))
+                st.plotly_chart(fig_fmt, use_container_width=True)
+
+            st.markdown("#### Match Summary")
             summary_cols = [c for c in ["Date Label", "Outcome", "score", "serve_rating", "mental_focus"] if c in h2h_df.columns]
             st.dataframe(
                 h2h_df[summary_cols].rename(columns={
