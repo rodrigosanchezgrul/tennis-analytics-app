@@ -331,6 +331,56 @@ df, video_df, raw_db_cols = load_data()
 valid_db_cols = get_table_columns(raw_db_cols)
 note_col = next((c for c in ["tactical_note", "tactical_notes", "notes", "note", "reflection", "comments"] if c in valid_db_cols), "tactical_note")
 
+
+# ==========================================
+# GRANULAR 11-STROKE SCHEMA & UNIFIED EXTRACTOR
+# ==========================================
+GRANULAR_STROKES = [
+    ("1st Serve", "first_serve", ["first_serve", "1st Serve", "First Serve", "serve_rating"], "#2980b9"),
+    ("2nd Serve", "second_serve", ["second_serve", "2nd Serve", "Second Serve", "serve_rating"], "#5dade2"),
+    ("Forehand", "fh_rating", ["fh_rating", "Forehand", "Forehand Quality"], "#2ecc71"),
+    ("Backhand", "bh_rating", ["bh_rating", "Backhand", "Backhand Quality"], "#e67e22"),
+    ("Forehand Return", "fh_return", ["fh_return", "Forehand Return", "return_quality", "return_rating"], "#8e44ad"),
+    ("Backhand Return", "bh_return", ["bh_return", "Backhand Return", "return_quality", "return_rating"], "#bb8fce"),
+    ("Forehand Volley", "fh_volley", ["fh_volley", "Forehand Volley", "net_quality", "volley_rating"], "#16a085"),
+    ("Backhand Volley", "bh_volley", ["bh_volley", "Backhand Volley", "net_quality", "volley_rating"], "#48c9b0"),
+    ("Overhead", "overhead_rating", ["overhead_rating", "Overhead", "Smash"], "#f39c12"),
+    ("Slice", "slice_rating", ["slice_rating", "Slice"], "#95a5a6"),
+    ("Movement", "movement_rating", ["movement_rating", "Movement", "physical_energy"], "#e74c3c"),
+]
+
+def enrich_granular_strokes(dataframe):
+    if dataframe is None or dataframe.empty:
+        return dataframe
+    out = dataframe.copy()
+    for label, canonical_col, aliases, _ in GRANULAR_STROKES:
+        s = pd.Series(np.nan, index=out.index, dtype="float64")
+        # 1. Check exact canonical & alias columns (including unpacked [META:...])
+        for col in aliases:
+            if col in out.columns:
+                s = s.fillna(pd.to_numeric(out[col], errors="coerce"))
+        # 2. Extract from clean_note text (e.g., "1st Serve : 7.0 | Slice : 6.0 | Movement : 6.0")
+        if "clean_note" in out.columns:
+            escaped_names = "|".join(re.escape(a) for a in [label] + aliases if "_" not in a)
+            if escaped_names:
+                ext = out["clean_note"].astype(str).str.extract(
+                    rf"(?:{escaped_names})\s*:\s*(\d+(?:\.\d+)?)",
+                    flags=re.IGNORECASE
+                )[0]
+                s = s.fillna(pd.to_numeric(ext, errors="coerce"))
+        out[canonical_col] = s
+    # Keep legacy aggregate columns populated for any downstream ML/summary metric
+    if "serve_rating" not in out.columns or out["serve_rating"].isna().all():
+        out["serve_rating"] = out[["first_serve", "second_serve"]].mean(axis=1)
+    else:
+        out["serve_rating"] = pd.to_numeric(out["serve_rating"], errors="coerce").fillna(
+            out[["first_serve", "second_serve"]].mean(axis=1)
+        )
+    return out
+
+if not df.empty:
+    df = enrich_granular_strokes(df)
+
 tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
 
     "🕸️ Skill Radar & Scatter Lab",
@@ -496,54 +546,26 @@ with tab1:
             prog_df["Date_Str"] = prog_df["match_date"].dt.strftime("%Y-%m-%d").fillna("Session")
             prog_df["Session_Label"] = [f"#{i+1} ({d})" for i, d in enumerate(prog_df["Date_Str"])]
 
-            def get_all_tracked_skills(source_df):
-                # Map display label -> list of possible column names or text patterns in clean_note
-                skill_defs = [
-                    ("Serve Quality", ["serve_rating", "Serve Quality", "serve_quality"], "#3498db"),
-                    ("Return Quality", ["return_quality", "Return Quality", "return_rating"], "#9b59b6"),
-                    ("Forehand Quality", ["fh_rating", "Forehand Quality", "forehand_quality"], "#2ecc71"),
-                    ("Backhand Quality", ["bh_rating", "Backhand Quality", "backhand_quality"], "#e67e22"),
-                    ("Net & Conversion", ["net_quality", "Net & Conversion", "volley_rating", "net_conversion"], "#1abc9c"),
-                    ("Baseline Battle / Focus", ["mental_focus", "Baseline Battle / Focus", "baseline_focus"], "#f1c40f"),
-                    ("Physical State / Energy", ["physical_energy", "Physical State / Energy", "movement_rating", "Movement", "stamina_rating"], "#e74c3c"),
-                    ("Movement", ["movement_rating", "Movement"], "#fd79a8"),
-                    ("Slice", ["slice_rating", "Slice"], "#95a5a6")
-                ]
-                results = []
-                for label, cols, color in skill_defs:
-                    series = pd.Series(np.nan, index=source_df.index, dtype="float64")
-                    for c in cols:
-                        if c in source_df.columns:
-                            series = series.fillna(pd.to_numeric(source_df[c], errors="coerce"))
-                    # Also parse "Label : X.X" from imported CSV notes (e.g. "Slice : 6.0 | Movement : 6.0")
-                    if "clean_note" in source_df.columns:
-                        short_key = label.split()[0]
-                        extracted = source_df["clean_note"].astype(str).str.extract(
-                            rf"(?:{re.escape(label)}|{re.escape(short_key)})\s*:\s*(\d+(?:\.\d+)?)",
-                            flags=re.IGNORECASE
-                        )[0]
-                        series = series.fillna(pd.to_numeric(extracted, errors="coerce"))
-                    if series.notna().any():
-                        results.append((label, series, color))
-                return results
-
             fig_all_skills = go.Figure()
-            for s_label, s_series, s_color in get_all_tracked_skills(prog_df):
-                fig_all_skills.add_trace(go.Scatter(
-                    x=prog_df["Session_Label"],
-                    y=s_series,
-                    mode="lines+markers",
-                    name=s_label,
-                    connectgaps=True,
-                    line=dict(color=s_color, width=2.5),
-                    marker=dict(size=7)
-                ))
+            for s_label, s_col, _, s_color in GRANULAR_STROKES:
+                if s_col in prog_df.columns:
+                    s_series = pd.to_numeric(prog_df[s_col], errors="coerce")
+                    if s_series.notna().any():
+                        fig_all_skills.add_trace(go.Scatter(
+                            x=prog_df["Session_Label"],
+                            y=s_series,
+                            mode="lines+markers",
+                            name=s_label,
+                            connectgaps=True,
+                            line=dict(color=s_color, width=2.5),
+                            marker=dict(size=7)
+                        ))
 
             fig_all_skills.update_layout(
-                yaxis=dict(range=[0, 10.5], title="Skill Rating (1-10)"),
-                xaxis_title="Chronological Session",
+                yaxis=dict(range=[0, 10.5], title="Stroke Rating (1-10)"),
+                xaxis_title="Chronological Session (Click any stroke in legend to toggle)",
                 template="plotly_dark",
-                height=450,
+                height=470,
                 hovermode="x unified",
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
             )
@@ -1096,17 +1118,26 @@ with tab5:
         )
 
         st.markdown("---")
-        st.markdown("**8-Axis Skill Ratings (Powers Your Pro Radar Chart — 1 to 10)**")
-        r1, r2, r3, r4 = st.columns(4)
-        serve_rating = r1.slider("Serve Quality", 1, 10, 6)
-        ret_rating = r2.slider("Return Quality", 1, 10, 6)
-        fh_rating = r3.slider("Forehand Quality", 1, 10, 6)
-        bh_rating = r4.slider("Backhand Quality", 1, 10, 6)
+        st.markdown("**?? Complete Stroke-by-Stroke Ratings (1 to 10)**")
+        g_r1_c1, g_r1_c2, g_r1_c3, g_r1_c4 = st.columns(4)
+        first_serve = g_r1_c1.slider("1st Serve", 1, 10, 6)
+        second_serve = g_r1_c2.slider("2nd Serve", 1, 10, 6)
+        fh_rating = g_r1_c3.slider("Forehand", 1, 10, 6)
+        bh_rating = g_r1_c4.slider("Backhand", 1, 10, 6)
 
-        r5, r6, r7 = st.columns(3)
-        net_rating = r5.slider("Net & Conversion", 1, 10, 6)
-        mental_focus = r6.slider("Baseline Battle / Focus", 1, 10, 6)
-        energy_level = r7.slider("Physical State / Energy", 1, 10, 6)
+        g_r2_c1, g_r2_c2, g_r2_c3, g_r2_c4 = st.columns(4)
+        fh_return = g_r2_c1.slider("Forehand Return", 1, 10, 6)
+        bh_return = g_r2_c2.slider("Backhand Return", 1, 10, 6)
+        fh_volley = g_r2_c3.slider("Forehand Volley", 1, 10, 6)
+        bh_volley = g_r2_c4.slider("Backhand Volley", 1, 10, 6)
+
+        g_r3_c1, g_r3_c2, g_r3_c3, g_r3_c4 = st.columns(4)
+        overhead_rating = g_r3_c1.slider("Overhead", 1, 10, 6)
+        slice_rating = g_r3_c2.slider("Slice", 1, 10, 6)
+        movement_rating = g_r3_c3.slider("Movement", 1, 10, 6)
+        mental_focus = g_r3_c4.slider("Mental Focus", 1, 10, 6)
+
+        serve_rating = round((first_serve + second_serve) / 2.0, 1)
 
         st.markdown("---")
         st.markdown("**Tactical Root-Cause & Descriptive Notes**")
@@ -1410,45 +1441,18 @@ with tab7:
             g_col1, g_col2 = st.columns(2)
 
             # Graph 1 & Graph 2: ALL Skills Radar + Progression vs this Opponent
-            def extract_h2h_skills(sub_df, full_df):
-                skill_defs = [
-                    ("Serve Quality", ["serve_rating", "Serve Quality", "serve_quality"], "#3498db"),
-                    ("Return Quality", ["return_quality", "Return Quality", "return_rating"], "#9b59b6"),
-                    ("Forehand Quality", ["fh_rating", "Forehand Quality", "forehand_quality"], "#2ecc71"),
-                    ("Backhand Quality", ["bh_rating", "Backhand Quality", "backhand_quality"], "#e67e22"),
-                    ("Net & Conversion", ["net_quality", "Net & Conversion", "volley_rating", "net_conversion"], "#1abc9c"),
-                    ("Baseline Battle / Focus", ["mental_focus", "Baseline Battle / Focus", "baseline_focus"], "#f1c40f"),
-                    ("Physical State / Energy", ["physical_energy", "Physical State / Energy", "movement_rating", "Movement", "stamina_rating"], "#e74c3c"),
-                    ("Movement", ["movement_rating", "Movement"], "#fd79a8"),
-                    ("Slice", ["slice_rating", "Slice"], "#95a5a6")
-                ]
-                out = []
-                for label, cols, color in skill_defs:
-                    s_sub = pd.Series(np.nan, index=sub_df.index, dtype="float64")
-                    s_all = pd.Series(np.nan, index=full_df.index, dtype="float64")
-                    for c in cols:
-                        if c in sub_df.columns:
-                            s_sub = s_sub.fillna(pd.to_numeric(sub_df[c], errors="coerce"))
-                        if c in full_df.columns:
-                            s_all = s_all.fillna(pd.to_numeric(full_df[c], errors="coerce"))
-                    short_key = label.split()[0]
-                    if "clean_note" in sub_df.columns:
-                        ext_sub = sub_df["clean_note"].astype(str).str.extract(
-                            rf"(?:{re.escape(label)}|{re.escape(short_key)})\s*:\s*(\d+(?:\.\d+)?)",
-                            flags=re.IGNORECASE
-                        )[0]
-                        s_sub = s_sub.fillna(pd.to_numeric(ext_sub, errors="coerce"))
-                    if "clean_note" in full_df.columns:
-                        ext_all = full_df["clean_note"].astype(str).str.extract(
-                            rf"(?:{re.escape(label)}|{re.escape(short_key)})\s*:\s*(\d+(?:\.\d+)?)",
-                            flags=re.IGNORECASE
-                        )[0]
-                        s_all = s_all.fillna(pd.to_numeric(ext_all, errors="coerce"))
+            h2h_skills = []
+            for s_label, s_col, _, s_color in GRANULAR_STROKES:
+                if s_col in h2h_df.columns:
+                    s_sub = pd.to_numeric(h2h_df[s_col], errors="coerce")
+                    s_all = pd.to_numeric(df[s_col], errors="coerce") if s_col in df.columns else s_sub
                     if s_sub.notna().any():
-                        out.append((label, s_sub, float(s_all.mean()) if s_all.notna().any() else float(s_sub.mean()), color))
-                return out
-
-            h2h_skills = extract_h2h_skills(h2h_df, df)
+                        h2h_skills.append((
+                            s_label,
+                            s_sub,
+                            float(s_all.mean()) if s_all.notna().any() else float(s_sub.mean()),
+                            s_color
+                        ))
 
             with g_col1:
                 if len(h2h_skills) >= 3:
