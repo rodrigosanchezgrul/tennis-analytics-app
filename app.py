@@ -607,25 +607,30 @@ with tab1:
             prog_df["Session_Label"] = [f"#{i+1} ({d})" for i, d in enumerate(prog_df["Date_Str"])]
 
             fig_all_skills = go.Figure()
-            for s_label, s_col, _, s_color in GRANULAR_STROKES:
+            all_13_traces = GRANULAR_STROKES + [("Mental Focus", "mental_focus", ["mental_focus"], "#f1c40f")]
+            for s_label, s_col, _, s_color in all_13_traces:
                 if s_col in prog_df.columns:
                     s_series = pd.to_numeric(prog_df[s_col], errors="coerce")
-                    if s_series.notna().any():
-                        fig_all_skills.add_trace(go.Scatter(
-                            x=prog_df["Session_Label"],
-                            y=s_series,
-                            mode="lines+markers",
-                            name=s_label,
-                            connectgaps=True,
-                            line=dict(color=s_color, width=2.5),
-                            marker=dict(size=7)
-                        ))
+                else:
+                    s_series = pd.Series(np.nan, index=prog_df.index)
+                # Fill missing historical values with column median (or 5.5 neutral) so every line renders across all 22 sessions
+                fill_val = float(s_series.median()) if s_series.notna().any() else 5.5
+                s_series_filled = s_series.fillna(fill_val)
+                fig_all_skills.add_trace(go.Scatter(
+                    x=prog_df["Session_Label"],
+                    y=s_series_filled,
+                    mode="lines+markers",
+                    name=s_label,
+                    connectgaps=True,
+                    line=dict(color=s_color, width=2.2),
+                    marker=dict(size=6)
+                ))
 
             fig_all_skills.update_layout(
-                yaxis=dict(range=[0, 10.5], title="Stroke Rating (1-10)"),
-                xaxis_title="Chronological Session (Click any stroke in legend to toggle)",
+                yaxis=dict(range=[0, 10.5], title="Variable Rating (1-10)"),
+                xaxis_title="Chronological Session (Click any variable in legend to toggle)",
                 template="plotly_dark",
-                height=470,
+                height=500,
                 hovermode="x unified",
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
             )
