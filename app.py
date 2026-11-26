@@ -459,93 +459,96 @@ with tab1:
         radar_df["Outcome"] = df["Outcome"]
 
         axes = list(ALL_11_STROKE_MAP.keys())
+        wins_sub = df[df["Outcome"] == "Win"] if "Outcome" in df.columns else df.iloc[0:0]
+        loss_sub = df[df["Outcome"] == "Loss"] if "Outcome" in df.columns else df.iloc[0:0]
+        prac_sub = df[~df["Outcome"].isin(["Win", "Loss"])] if "Outcome" in df.columns else df.iloc[0:0]
 
-        for _a in axes:
-            if _a not in radar_df.columns:
-                _mapped = ALL_11_STROKE_MAP.get(_a, _a)
-                radar_df[_a] = pd.to_numeric(radar_df[_mapped], errors="coerce") if _mapped in radar_df.columns else np.nan
-            else:
-                radar_df[_a] = pd.to_numeric(radar_df[_a], errors="coerce")
-        season_avg = [radar_df[a].mean() for a in axes]
-        wins_df = radar_df[radar_df["Outcome"] == "Win"]
-        losses_df = radar_df[radar_df["Outcome"] == "Loss"]
-        wall_df = radar_df[radar_df["Outcome"] == "Training / Wall"]
+        def _axis_means(sub):
+            vals = []
+            for lbl in axes:
+                col = ALL_11_STROKE_MAP[lbl]
+                s = pd.to_numeric(sub[col], errors="coerce") if (not sub.empty and col in sub.columns) else pd.Series(dtype="float64")
+                vals.append(round(float(s.mean()), 2) if s.notna().any() else None)
+            return vals
 
-        r_col1, r_col2 = st.columns([1.4, 1])
+        season_avg = _axis_means(df)
+        win_avg = _axis_means(wins_sub)
+        loss_avg = _axis_means(loss_sub)
+        prac_avg = _axis_means(prac_sub)
 
-        with r_col1:
-            fig_radar = go.Figure()
+        # Filter out axes that have None across the entire dataset so Plotly radar draws a clean closed polygon
+        active_idx = [i for i, v in enumerate(season_avg) if v is not None]
+        plot_axes = [axes[i] for i in active_idx]
+        p_season = [season_avg[i] for i in active_idx]
+        p_win = [win_avg[i] if win_avg[i] is not None else season_avg[i] for i in active_idx]
+        p_loss = [loss_avg[i] if loss_avg[i] is not None else season_avg[i] for i in active_idx]
+        p_prac = [prac_avg[i] if prac_avg[i] is not None else season_avg[i] for i in active_idx]
+
+        fig_radar = go.Figure()
+        if plot_axes:
             fig_radar.add_trace(go.Scatterpolar(
-                r=season_avg + [season_avg[0]], theta=axes + [axes[0]],
-                fill="toself", fillcolor="rgba(231, 76, 60, 0.12)",
-                line=dict(color="#e74c3c", width=3), marker=dict(size=8, color="#e74c3c"),
-                name=f"Season Avg ({len(radar_df)} sessions)"
+                r=p_season + [p_season[0]], theta=plot_axes + [plot_axes[0]],
+                fill="toself", name=f"Season Avg ({len(df)} sessions)",
+                line=dict(color="#e74c3c", width=2.5), opacity=0.65
             ))
-            if not wins_df.empty:
-                win_avg = [wins_df[a].mean() for a in axes]
+            if not wins_sub.empty:
                 fig_radar.add_trace(go.Scatterpolar(
-                    r=win_avg + [win_avg[0]], theta=axes + [axes[0]],
-                    fill="toself", fillcolor="rgba(46, 204, 113, 0.18)",
-                    line=dict(color="#2ecc71", width=3), marker=dict(size=8, color="#2ecc71"),
-                    name=f"In Wins ({len(wins_df)} matches)"
+                    r=p_win + [p_win[0]], theta=plot_axes + [plot_axes[0]],
+                    fill="toself", name=f"In Wins ({len(wins_sub)} matches)",
+                    line=dict(color="#2ecc71", width=2.5), opacity=0.55
                 ))
-            if not losses_df.empty:
-                loss_avg = [losses_df[a].mean() for a in axes]
+            if not loss_sub.empty:
                 fig_radar.add_trace(go.Scatterpolar(
-                    r=loss_avg + [loss_avg[0]], theta=axes + [axes[0]],
-                    fill="none", line=dict(color="#f39c12", width=2.5, dash="dot"),
-                    marker=dict(size=7, color="#f39c12"),
-                    name=f"In Losses ({len(losses_df)} matches)"
+                    r=p_loss + [p_loss[0]], theta=plot_axes + [plot_axes[0]],
+                    fill="none", name=f"In Losses ({len(loss_sub)} matches)",
+                    line=dict(color="#f39c12", width=2.5, dash="dot")
                 ))
-            if not wall_df.empty:
-                wall_avg = [wall_df[a].mean() for a in axes]
+            if not prac_sub.empty:
                 fig_radar.add_trace(go.Scatterpolar(
-                    r=wall_avg + [wall_avg[0]], theta=axes + [axes[0]],
-                    fill="none", line=dict(color="#3498db", width=2),
-                    marker=dict(size=6, color="#3498db"),
-                    name=f"Wall & Training ({len(wall_df)})"
+                    r=p_prac + [p_prac[0]], theta=plot_axes + [plot_axes[0]],
+                    fill="none", name=f"Wall & Training ({len(prac_sub)})",
+                    line=dict(color="#3498db", width=2)
                 ))
 
-            fig_radar.update_layout(
-                polar=dict(
-                    bgcolor="#11161d",
-                    radialaxis=dict(visible=True, range=[0, 10], tickvals=[2, 4, 6, 8, 10], gridcolor="#2c3540"),
-                    angularaxis=dict(gridcolor="#2c3540", tickfont=dict(size=12))
-                ),
-                template="plotly_dark", height=520,
-                legend=dict(orientation="h", yanchor="bottom", y=1.08, xanchor="center", x=0.5),
-                margin=dict(l=60, r=60, t=60, b=30)
-            )
+        fig_radar.update_layout(
+            polar=dict(radialaxis=dict(visible=True, range=[0, 10])),
+            showlegend=True,
+            legend=dict(orientation="h", yanchor="bottom", y=1.12, xanchor="left", x=0),
+            template="plotly_dark",
+            height=460,
+            margin=dict(l=65, r=65, t=70, b=40)
+        )
+
+        r_col1, r_col2 = st.columns([1.15, 1])
+        with r_col1:
             st.plotly_chart(fig_radar, use_container_width=True)
 
         with r_col2:
-            st.markdown("### 📋 Skill Scorecard Breakdown")
-            scorecard = pd.DataFrame({
-                "Skill Dimension": axes,
-                "Season Avg": [round(x, 1) for x in season_avg],
-                "Win Avg": [round(wins_df[a].mean(), 1) if not wins_df.empty else np.nan for a in axes],
-                "Loss Avg": [round(losses_df[a].mean(), 1) if not losses_df.empty else np.nan for a in axes],
-            })
-            if not wins_df.empty and not losses_df.empty:
-                scorecard["Win-Loss Gap"] = (scorecard["Win Avg"] - scorecard["Loss Avg"]).round(1)
+            st.subheader("?? Skill Scorecard Breakdown")
+            sc_rows = []
+            for i, lbl in enumerate(axes):
+                s_v, w_v, l_v = season_avg[i], win_avg[i], loss_avg[i]
+                gap = round(w_v - l_v, 2) if (w_v is not None and l_v is not None) else None
+                sc_rows.append({
+                    "Skill Dimension": lbl,
+                    "Season Avg": s_v,
+                    "Win Avg": w_v,
+                    "Loss Avg": l_v,
+                    "Win-Loss Gap": gap
+                })
+            scorecard = pd.DataFrame(sc_rows)
             st.dataframe(scorecard, use_container_width=True, hide_index=True)
 
-            for _sc_col in ["Season Avg", "Win Avg", "Loss Avg", "Win-Loss Gap"]:
-                if _sc_col in scorecard.columns:
-                    scorecard[_sc_col] = pd.to_numeric(scorecard[_sc_col], errors="coerce")
             valid_sc = scorecard.dropna(subset=["Season Avg"]).copy()
             if not valid_sc.empty:
                 best_skill = valid_sc.loc[valid_sc["Season Avg"].idxmax(), "Skill Dimension"]
                 best_val = valid_sc["Season Avg"].max()
-                st.success(f"🏆 **Highest Rated Skill:** **{best_skill}** ({best_val:.1f} / 10)")
-                if "Win-Loss Gap" in scorecard.columns and valid_sc["Win-Loss Gap"].notna().any():
-                    biggest_gap_row = valid_sc.loc[valid_sc["Win-Loss Gap"].idxmax()]
-                    st.warning(
-                        f"⚡ **Biggest Win/Loss Separator:** **{biggest_gap_row['Skill Dimension']}** "
-                        f"drops by **{biggest_gap_row['Win-Loss Gap']:.1f} pts** when you lose."
-                    )
-            else:
-                st.info("Log sessions with stroke ratings to populate your 11-Stroke Scorecard.")
+                st.success(f"?? **Highest Rated Stroke:** {best_skill} ({best_val:.1f} / 10)")
+                valid_gap = valid_sc.dropna(subset=["Win-Loss Gap"])
+                if not valid_gap.empty:
+                    sep_skill = valid_gap.loc[valid_gap["Win-Loss Gap"].idxmax(), "Skill Dimension"]
+                    sep_val = valid_gap["Win-Loss Gap"].max()
+                    st.warning(f"? **Biggest Win/Loss Separator:** {sep_skill} drops **{sep_val:.1f} pts** when you lose.")
         st.markdown("---")
         st.subheader("🔵 Multi-Factor Correlation Scatterplot")
         sc1, sc2, sc3 = st.columns(3)
