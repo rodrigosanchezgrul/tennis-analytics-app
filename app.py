@@ -1439,8 +1439,6 @@ with tab7:
                             s_sub,
                             float(s_all.mean()) if s_all.notna().any() else 6.0,
                             s_color
-                        )) if s_all.notna().any() else float(s_sub.mean()),
-                            s_color
                         ))
 
             with g_col1:
