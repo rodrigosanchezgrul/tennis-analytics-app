@@ -390,7 +390,7 @@ def enrich_granular_strokes(dataframe):
         out["fh_volley"] = out["fh_volley"].fillna(net)
         out["bh_volley"] = out["bh_volley"].fillna(net)
 
-    out["serve_rating"] = out[["first_serve", "second_serve"]].mean(axis=1)
+    out["serve_rating"] = out[ALL_12_ML_FEATURES].mean(axis=1)
     return out
 
 if not df.empty:
@@ -399,6 +399,14 @@ if not df.empty:
 ALL_11_STROKE_MAP = {label: col for label, col, _, _ in GRANULAR_STROKES}
 ALL_11_STROKE_MAP["Mental Focus"] = "mental_focus"
 ALL_11_STROKE_COLS = list(ALL_11_STROKE_MAP.values())
+# Create ML-ready imputed columns (_ml) so Random Forest, XGBoost, Logistic/Ridge Regression,
+# Correlation Heatmaps, and Simulators analyze ALL 12 variables without dropping historical matches
+ALL_12_ML_FEATURES = list(ALL_11_STROKE_COLS)
+for _lbl, _col in ALL_11_STROKE_MAP.items():
+    if _col not in df.columns:
+        df[_col] = np.nan
+    df[_col] = pd.to_numeric(df[_col], errors="coerce")
+    df[_lbl] = df[_col]
 
 for _lbl, _col in ALL_11_STROKE_MAP.items():
     if _col not in df.columns:
@@ -435,7 +443,7 @@ with tab1:
         st.caption(f"Showing {len(df)} total logged sessions. Unmapped stroke dimensions smoothly use your session's average execution baseline rather than artificial constants.")
 
         # Compute each row's true baseline average across available numeric ratings
-        base_rating_cols = [c for c in ["serve_rating", "mental_focus", "energy_level", "fh_rating", "bh_rating", "ret_rating", "net_rating"] if c in df.columns]
+        base_rating_cols = [c for c in ALL_12_ML_FEATURES if c in df.columns]
         if base_rating_cols:
             row_baseline = df[base_rating_cols].apply(pd.to_numeric, errors="coerce").mean(axis=1).fillna(6.0)
         else:
@@ -476,13 +484,12 @@ with tab1:
         loss_avg = _axis_means(loss_sub)
         prac_avg = _axis_means(prac_sub)
 
-        # Filter out axes that have None across the entire dataset so Plotly radar draws a clean closed polygon
-        active_idx = [i for i, v in enumerate(season_avg) if v is not None]
-        plot_axes = [axes[i] for i in active_idx]
-        p_season = [season_avg[i] for i in active_idx]
-        p_win = [win_avg[i] if win_avg[i] is not None else season_avg[i] for i in active_idx]
-        p_loss = [loss_avg[i] if loss_avg[i] is not None else season_avg[i] for i in active_idx]
-        p_prac = [prac_avg[i] if prac_avg[i] is not None else season_avg[i] for i in active_idx]
+        # Always display ALL 12 variables on the Radar Chart
+        plot_axes = list(axes)
+        p_season = [v if v is not None else 5.0 for v in season_avg]
+        p_win = [win_avg[i] if win_avg[i] is not None else p_season[i] for i in range(len(axes))]
+        p_loss = [loss_avg[i] if loss_avg[i] is not None else p_season[i] for i in range(len(axes))]
+        p_prac = [prac_avg[i] if prac_avg[i] is not None else p_season[i] for i in range(len(axes))] if prac_avg[i] is not None else season_avg[i] for i in active_idx]
 
         fig_radar = go.Figure()
         if plot_axes:
@@ -665,7 +672,7 @@ with tab2:
             aw_df = df.copy()
             is_no_aw = aw_df["ankle_weights"].astype(str).str.lower().isin(["no", "nan", "none", "false", "0", ""])
             aw_df["Training Load"] = np.where(is_no_aw, "Standard (No Weights)", "With Ankle Weights")
-            rating_cols = [c for c in ["serve_rating", "mental_focus", "energy_level"] if c in aw_df.columns]
+            rating_cols = [c for c in ALL_12_ML_FEATURES if c in aw_df.columns]
             if rating_cols and aw_df["Training Load"].nunique() > 1:
                 aw_grp = aw_df.groupby("Training Load")[rating_cols].mean().reset_index().melt(
                     id_vars="Training Load", var_name="Metric", value_name="Avg Score"
@@ -857,7 +864,7 @@ with tab3:
         st.warning(f"Currently found {len(ml_df)} completed matches. Log at least 6–8 matches with Win/Loss results to unlock the ML diagnostic engine.")
     else:
         ml_df["target_win"] = np.where(ml_df["Outcome"] == "Win", 1, 0)
-        num_features = [c for c in ["serve_rating", "mental_focus", "energy_level", "fh_rating", "bh_rating", "ret_rating", "net_rating"] if c in ml_df.columns and ml_df[c].notna().any()]
+        num_features = [c for c in ALL_12_ML_FEATURES if c in ml_df.columns and ml_df[c].notna().any()]
         X_num = ml_df[num_features].apply(pd.to_numeric, errors="coerce")
         X_num = X_num.fillna(X_num.median()).fillna(6.0)
         is_no_aw_ml = ml_df["ankle_weights"].astype(str).str.lower().isin(["no", "nan", "none", "false", "0", ""])
@@ -1459,15 +1466,16 @@ with tab7:
 
             # Graph 1 & Graph 2: ALL Skills Radar + Progression vs this Opponent
             h2h_skills = []
-            for s_label, s_col, _, s_color in GRANULAR_STROKES:
-                if s_col in h2h_df.columns:
-                    s_sub = pd.to_numeric(h2h_df[s_col], errors="coerce")
-                    s_all = pd.to_numeric(df[s_col], errors="coerce") if s_col in df.columns else s_sub
-                    if s_sub.notna().any() or s_all.notna().any():
-                        h2h_skills.append((
-                            s_label,
-                            s_sub,
-                            float(s_all.mean()) if s_all.notna().any() else 6.0,
+            for s_label, s_col, _, s_color in GRANULAR_STROKES + [("Mental Focus", "mental_focus", ["mental_focus"], "#f1c40f")]:
+                s_sub = pd.to_numeric(h2h_df[s_col], errors="coerce") if s_col in h2h_df.columns else pd.Series(np.nan, index=h2h_df.index)
+                s_all = pd.to_numeric(df[s_col], errors="coerce") if s_col in df.columns else s_sub
+                season_val = float(s_all.mean()) if s_all.notna().any() else 5.0
+                h2h_skills.append((
+                    s_label,
+                    s_sub.fillna(season_val),
+                    season_val,
+                    s_color
+                )) if s_all.notna().any() else 6.0,
                             s_color
                         ))
 
