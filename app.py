@@ -391,7 +391,7 @@ def enrich_granular_strokes(dataframe):
         out["fh_volley"] = out["fh_volley"].fillna(net)
         out["bh_volley"] = out["bh_volley"].fillna(net)
 
-    out["serve_rating"] = out[ALL_13_ML_FEATURES].mean(axis=1)
+    out["serve_rating"] = out[["first_serve", "second_serve"]].mean(axis=1)
     return out
 
 if not df.empty:
