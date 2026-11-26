@@ -347,6 +347,7 @@ GRANULAR_STROKES = [
     ("Overhead", "overhead_rating", ["overhead_rating", "Overhead", "Smash", "overhead"], "#f39c12"),
     ("Slice", "slice_rating", ["slice_rating", "Slice", "slice"], "#95a5a6"),
     ("Movement", "movement_rating", ["movement_rating", "Movement", "movement"], "#e74c3c"),
+    ("Physical / Stamina", "stamina_rating", ["stamina_rating", "Physical / Stamina", "Physical", "Stamina", "physical_energy", "Physical State / Energy"], "#ff6b6b"),
 ]
 
 def enrich_granular_strokes(dataframe):
@@ -390,32 +391,32 @@ def enrich_granular_strokes(dataframe):
         out["fh_volley"] = out["fh_volley"].fillna(net)
         out["bh_volley"] = out["bh_volley"].fillna(net)
 
-    out["serve_rating"] = out[ALL_12_ML_FEATURES].mean(axis=1)
+    out["serve_rating"] = out[ALL_13_ML_FEATURES].mean(axis=1)
     return out
 
 if not df.empty:
     df = enrich_granular_strokes(df)
 
-ALL_11_STROKE_MAP = {label: col for label, col, _, _ in GRANULAR_STROKES}
-ALL_11_STROKE_MAP["Mental Focus"] = "mental_focus"
-ALL_11_STROKE_COLS = list(ALL_11_STROKE_MAP.values())
+ALL_13_VARIABLE_MAP = {label: col for label, col, _, _ in GRANULAR_STROKES}
+ALL_13_VARIABLE_MAP["Mental Focus"] = "mental_focus"
+ALL_13_VARIABLE_COLS = list(ALL_13_VARIABLE_MAP.values())
 # Create ML-ready imputed columns (_ml) so Random Forest, XGBoost, Logistic/Ridge Regression,
 # Correlation Heatmaps, and Simulators analyze ALL 12 variables without dropping historical matches
-ALL_12_ML_FEATURES = list(ALL_11_STROKE_COLS)
-for _lbl, _col in ALL_11_STROKE_MAP.items():
+ALL_13_ML_FEATURES = list(ALL_13_VARIABLE_COLS)
+for _lbl, _col in ALL_13_VARIABLE_MAP.items():
     if _col not in df.columns:
         df[_col] = np.nan
     df[_col] = pd.to_numeric(df[_col], errors="coerce")
     df[_lbl] = df[_col]
 
-for _lbl, _col in ALL_11_STROKE_MAP.items():
+for _lbl, _col in ALL_13_VARIABLE_MAP.items():
     if _col not in df.columns:
         df[_col] = np.nan
     df[_col] = pd.to_numeric(df[_col], errors="coerce")
     df[_lbl] = df[_col]
 
 
-for _sc in ALL_11_STROKE_COLS:
+for _sc in ALL_13_VARIABLE_COLS:
     if _sc not in df.columns:
         df[_sc] = np.nan
     df[_sc] = pd.to_numeric(df[_sc], errors="coerce")
@@ -443,7 +444,7 @@ with tab1:
         st.caption(f"Showing {len(df)} total logged sessions. Unmapped stroke dimensions smoothly use your session's average execution baseline rather than artificial constants.")
 
         # Compute each row's true baseline average across available numeric ratings
-        base_rating_cols = [c for c in ALL_12_ML_FEATURES if c in df.columns]
+        base_rating_cols = [c for c in ALL_13_ML_FEATURES if c in df.columns]
         if base_rating_cols:
             row_baseline = df[base_rating_cols].apply(pd.to_numeric, errors="coerce").mean(axis=1).fillna(6.0)
         else:
@@ -466,7 +467,7 @@ with tab1:
         radar_df["Attack / Overall Index"] = radar_df.mean(axis=1)
         radar_df["Outcome"] = df["Outcome"]
 
-        axes = list(ALL_11_STROKE_MAP.keys())
+        axes = list(ALL_13_VARIABLE_MAP.keys())
         wins_sub = df[df["Outcome"] == "Win"] if "Outcome" in df.columns else df.iloc[0:0]
         loss_sub = df[df["Outcome"] == "Loss"] if "Outcome" in df.columns else df.iloc[0:0]
         prac_sub = df[~df["Outcome"].isin(["Win", "Loss"])] if "Outcome" in df.columns else df.iloc[0:0]
@@ -474,7 +475,7 @@ with tab1:
         def _axis_means(sub):
             vals = []
             for lbl in axes:
-                col = ALL_11_STROKE_MAP[lbl]
+                col = ALL_13_VARIABLE_MAP[lbl]
                 s = pd.to_numeric(sub[col], errors="coerce") if (not sub.empty and col in sub.columns) else pd.Series(dtype="float64")
                 vals.append(round(float(s.mean()), 2) if s.notna().any() else None)
             return vals
@@ -489,7 +490,7 @@ with tab1:
         p_season = [v if v is not None else 5.0 for v in season_avg]
         p_win = [win_avg[i] if win_avg[i] is not None else p_season[i] for i in range(len(axes))]
         p_loss = [loss_avg[i] if loss_avg[i] is not None else p_season[i] for i in range(len(axes))]
-        p_prac = [prac_avg[i] if prac_avg[i] is not None else p_season[i] for i in range(len(axes))] if prac_avg[i] is not None else season_avg[i] for i in active_idx]
+        p_prac = [prac_avg[i] if prac_avg[i] is not None else p_season[i] for i in range(len(axes))]
 
         fig_radar = go.Figure()
         if plot_axes:
@@ -570,14 +571,14 @@ with tab1:
         scatter_plot_df["Notes"] = df["clean_note"].fillna("") if "clean_note" in df.columns else ""
 
         rng = np.random.default_rng(42)
-        for _lbl, _col in ALL_11_STROKE_MAP.items():
+        for _lbl, _col in ALL_13_VARIABLE_MAP.items():
             if _col in df.columns:
                 scatter_plot_df[_col] = pd.to_numeric(df.loc[scatter_plot_df.index, _col], errors="coerce")
                 scatter_plot_df[_lbl] = scatter_plot_df[_col]
-        if x_axis not in scatter_plot_df.columns and x_axis in ALL_11_STROKE_MAP:
-            scatter_plot_df[x_axis] = pd.to_numeric(df.loc[scatter_plot_df.index, ALL_11_STROKE_MAP[x_axis]], errors="coerce")
-        if y_axis not in scatter_plot_df.columns and y_axis in ALL_11_STROKE_MAP:
-            scatter_plot_df[y_axis] = pd.to_numeric(df.loc[scatter_plot_df.index, ALL_11_STROKE_MAP[y_axis]], errors="coerce")
+        if x_axis not in scatter_plot_df.columns and x_axis in ALL_13_VARIABLE_MAP:
+            scatter_plot_df[x_axis] = pd.to_numeric(df.loc[scatter_plot_df.index, ALL_13_VARIABLE_MAP[x_axis]], errors="coerce")
+        if y_axis not in scatter_plot_df.columns and y_axis in ALL_13_VARIABLE_MAP:
+            scatter_plot_df[y_axis] = pd.to_numeric(df.loc[scatter_plot_df.index, ALL_13_VARIABLE_MAP[y_axis]], errors="coerce")
         scatter_plot_df["x_jit"] = scatter_plot_df[x_axis] + rng.uniform(-0.12, 0.12, size=len(scatter_plot_df))
         scatter_plot_df["y_jit"] = scatter_plot_df[y_axis] + rng.uniform(-0.12, 0.12, size=len(scatter_plot_df))
 
@@ -672,7 +673,7 @@ with tab2:
             aw_df = df.copy()
             is_no_aw = aw_df["ankle_weights"].astype(str).str.lower().isin(["no", "nan", "none", "false", "0", ""])
             aw_df["Training Load"] = np.where(is_no_aw, "Standard (No Weights)", "With Ankle Weights")
-            rating_cols = [c for c in ALL_12_ML_FEATURES if c in aw_df.columns]
+            rating_cols = [c for c in ALL_13_ML_FEATURES if c in aw_df.columns]
             if rating_cols and aw_df["Training Load"].nunique() > 1:
                 aw_grp = aw_df.groupby("Training Load")[rating_cols].mean().reset_index().melt(
                     id_vars="Training Load", var_name="Metric", value_name="Avg Score"
@@ -864,7 +865,7 @@ with tab3:
         st.warning(f"Currently found {len(ml_df)} completed matches. Log at least 6–8 matches with Win/Loss results to unlock the ML diagnostic engine.")
     else:
         ml_df["target_win"] = np.where(ml_df["Outcome"] == "Win", 1, 0)
-        num_features = [c for c in ALL_12_ML_FEATURES if c in ml_df.columns and ml_df[c].notna().any()]
+        num_features = [c for c in ALL_13_ML_FEATURES if c in ml_df.columns and ml_df[c].notna().any()]
         X_num = ml_df[num_features].apply(pd.to_numeric, errors="coerce")
         X_num = X_num.fillna(X_num.median()).fillna(6.0)
         is_no_aw_ml = ml_df["ankle_weights"].astype(str).str.lower().isin(["no", "nan", "none", "false", "0", ""])
@@ -1195,6 +1196,8 @@ with tab5:
         slice_rating = g_r3_c2.slider("Slice", 1, 10, 6)
         movement_rating = g_r3_c3.slider("Movement", 1, 10, 6)
         mental_focus = g_r3_c4.slider("Mental Focus", 1, 10, 6)
+        g_r4_c1, _, _, _ = st.columns(4)
+        stamina_rating = g_r4_c1.slider("Physical / Stamina", 1, 10, 6)
 
         serve_rating = round((first_serve + second_serve) / 2.0, 1)
 
@@ -1222,7 +1225,7 @@ with tab5:
 
         submitted = st.form_submit_button("Save Detailed Session", use_container_width=True)
         if submitted:
-            meta_payload = ALL_11_STROKE_MAP
+            meta_payload = ALL_13_VARIABLE_MAP
             narrative_parts = []
             if what_worked.strip():
                 narrative_parts.append(f"Worked: {what_worked.strip()}")
@@ -1234,7 +1237,7 @@ with tab5:
             encoded_note = f"[META:{json.dumps(meta_payload)}] {human_summary}".strip()
             opp_clean = opponent.strip() if opponent.strip() else ("Wall" if match_type == "Wall Session" else "Practice")
 
-            new_record = ALL_11_STROKE_MAP
+            new_record = ALL_13_VARIABLE_MAP
             insert_match(new_record, valid_db_cols)
             st.success("Session saved permanently to Supabase! Available immediately on your phone and PC.")
             st.rerun()
@@ -1375,7 +1378,7 @@ with tab6:
 
                         encoded_note = f"[META:{json.dumps(merged_meta)}] {clean_body}".strip() if merged_meta else clean_body
 
-                        base_rec = ALL_11_STROKE_MAP
+                        base_rec = ALL_13_VARIABLE_MAP
                         records_to_insert.append(base_rec)
 
                     bulk_insert_matches(records_to_insert, valid_db_cols)
@@ -1475,9 +1478,7 @@ with tab7:
                     s_sub.fillna(season_val),
                     season_val,
                     s_color
-                )) if s_all.notna().any() else 6.0,
-                            s_color
-                        ))
+                ))
 
             with g_col1:
                 if len(h2h_skills) >= 3:
@@ -1553,7 +1554,7 @@ with tab7:
             st.markdown("#### Match Summary")
             summary_cols = [c for c in ["Date Label", "Outcome", "score", "serve_rating", "mental_focus"] if c in h2h_df.columns]
             st.dataframe(
-                h2h_df[summary_cols].rename(columns=ALL_11_STROKE_MAP),
+                h2h_df[summary_cols].rename(columns=ALL_13_VARIABLE_MAP),
                 use_container_width=True,
                 hide_index=True
             )
