@@ -336,46 +336,61 @@ note_col = next((c for c in ["tactical_note", "tactical_notes", "notes", "note",
 # GRANULAR 11-STROKE SCHEMA & UNIFIED EXTRACTOR
 # ==========================================
 GRANULAR_STROKES = [
-    ("1st Serve", "first_serve", ["first_serve", "1st Serve", "First Serve", "serve_rating"], "#2980b9"),
-    ("2nd Serve", "second_serve", ["second_serve", "2nd Serve", "Second Serve", "serve_rating"], "#5dade2"),
-    ("Forehand", "fh_rating", ["fh_rating", "Forehand", "Forehand Quality"], "#2ecc71"),
-    ("Backhand", "bh_rating", ["bh_rating", "Backhand", "Backhand Quality"], "#e67e22"),
-    ("Forehand Return", "fh_return", ["fh_return", "Forehand Return", "return_quality", "return_rating"], "#8e44ad"),
-    ("Backhand Return", "bh_return", ["bh_return", "Backhand Return", "return_quality", "return_rating"], "#bb8fce"),
-    ("Forehand Volley", "fh_volley", ["fh_volley", "Forehand Volley", "net_quality", "volley_rating"], "#16a085"),
-    ("Backhand Volley", "bh_volley", ["bh_volley", "Backhand Volley", "net_quality", "volley_rating"], "#48c9b0"),
-    ("Overhead", "overhead_rating", ["overhead_rating", "Overhead", "Smash"], "#f39c12"),
-    ("Slice", "slice_rating", ["slice_rating", "Slice"], "#95a5a6"),
-    ("Movement", "movement_rating", ["movement_rating", "Movement", "physical_energy"], "#e74c3c"),
+    ("1st Serve", "first_serve", ["first_serve", "1st Serve", "First Serve", "1st_serve"], "#2980b9"),
+    ("2nd Serve", "second_serve", ["second_serve", "2nd Serve", "Second Serve", "2nd_serve"], "#5dade2"),
+    ("Forehand", "fh_rating", ["fh_rating", "Forehand", "Forehand Quality", "forehand"], "#2ecc71"),
+    ("Backhand", "bh_rating", ["bh_rating", "Backhand", "Backhand Quality", "backhand"], "#e67e22"),
+    ("Forehand Return", "fh_return", ["fh_return", "Forehand Return", "Forehand Return Quality", "fh_return_rating"], "#8e44ad"),
+    ("Backhand Return", "bh_return", ["bh_return", "Backhand Return", "Backhand Return Quality", "bh_return_rating"], "#bb8fce"),
+    ("Forehand Volley", "fh_volley", ["fh_volley", "Forehand Volley", "FH Volley", "fh_volley_rating"], "#16a085"),
+    ("Backhand Volley", "bh_volley", ["bh_volley", "Backhand Volley", "BH Volley", "bh_volley_rating"], "#48c9b0"),
+    ("Overhead", "overhead_rating", ["overhead_rating", "Overhead", "Smash", "overhead"], "#f39c12"),
+    ("Slice", "slice_rating", ["slice_rating", "Slice", "slice"], "#95a5a6"),
+    ("Movement", "movement_rating", ["movement_rating", "Movement", "movement"], "#e74c3c"),
 ]
 
 def enrich_granular_strokes(dataframe):
     if dataframe is None or dataframe.empty:
         return dataframe
     out = dataframe.copy()
+    # Combine all text columns so regex extraction finds ratings regardless of where they were stored
+    text_pool = pd.Series("", index=out.index, dtype="object")
+    for tcol in ["clean_note", "tactical_note", "notes", "score"]:
+        if tcol in out.columns:
+            text_pool = text_pool + " | " + out[tcol].fillna("").astype(str)
+
     for label, canonical_col, aliases, _ in GRANULAR_STROKES:
         s = pd.Series(np.nan, index=out.index, dtype="float64")
-        # 1. Check exact canonical & alias columns (including unpacked [META:...])
-        for col in aliases:
-            if col in out.columns:
-                s = s.fillna(pd.to_numeric(out[col], errors="coerce"))
-        # 2. Extract from clean_note text (e.g., "1st Serve : 7.0 | Slice : 6.0 | Movement : 6.0")
-        if "clean_note" in out.columns:
-            escaped_names = "|".join(re.escape(a) for a in [label] + aliases if "_" not in a)
-            if escaped_names:
-                ext = out["clean_note"].astype(str).str.extract(
-                    rf"(?:{escaped_names})\s*:\s*(\d+(?:\.\d+)?)",
-                    flags=re.IGNORECASE
-                )[0]
-                s = s.fillna(pd.to_numeric(ext, errors="coerce"))
+        # 1. Check exact canonical & alias columns (case-insensitive match across df.columns)
+        col_lookup = {c.lower().strip(): c for c in out.columns}
+        for alias in [label] + aliases:
+            matched_c = col_lookup.get(alias.lower().strip())
+            if matched_c:
+                s = s.fillna(pd.to_numeric(out[matched_c], errors="coerce"))
+        # 2. Extract "Label : 7.0" or "Label: 7" from combined text notes
+        text_aliases = list(dict.fromkeys([label] + [a for a in aliases if "_" not in a]))
+        pattern = r"(?:" + "|".join(re.escape(a) for a in text_aliases) + r")\s*[:=\-]\s*(\d+(?:\.\d+)?)"
+        ext = text_pool.str.extract(pattern, flags=re.IGNORECASE)[0]
+        s = s.fillna(pd.to_numeric(ext, errors="coerce"))
         out[canonical_col] = s
-    # Keep legacy aggregate columns populated for any downstream ML/summary metric
-    if "serve_rating" not in out.columns or out["serve_rating"].isna().all():
-        out["serve_rating"] = out[["first_serve", "second_serve"]].mean(axis=1)
-    else:
-        out["serve_rating"] = pd.to_numeric(out["serve_rating"], errors="coerce").fillna(
-            out[["first_serve", "second_serve"]].mean(axis=1)
-        )
+
+    # Fallback ONLY for legacy rows where granular split wasn't recorded at all
+    if "serve_rating" in out.columns:
+        srv = pd.to_numeric(out["serve_rating"], errors="coerce")
+        out["first_serve"] = out["first_serve"].fillna(srv)
+        out["second_serve"] = out["second_serve"].fillna(srv)
+    if "return_quality" in out.columns or "return_rating" in out.columns:
+        ret_col = "return_quality" if "return_quality" in out.columns else "return_rating"
+        ret = pd.to_numeric(out[ret_col], errors="coerce")
+        out["fh_return"] = out["fh_return"].fillna(ret)
+        out["bh_return"] = out["bh_return"].fillna(ret)
+    if "net_quality" in out.columns or "volley_rating" in out.columns:
+        net_col = "net_quality" if "net_quality" in out.columns else "volley_rating"
+        net = pd.to_numeric(out[net_col], errors="coerce")
+        out["fh_volley"] = out["fh_volley"].fillna(net)
+        out["bh_volley"] = out["bh_volley"].fillna(net)
+
+    out["serve_rating"] = out[["first_serve", "second_serve"]].mean(axis=1)
     return out
 
 if not df.empty:
@@ -399,7 +414,7 @@ with tab1:
     if df.empty:
         st.info("No sessions logged yet. Go to '📁 CSV Reset, Mapper & Database' to upload your 22-game CSV cleanly!")
     else:
-        st.subheader("🕸️ Pro-Style 8-Axis Skill & Match Profile (Self-Logged Data Only)")
+        st.subheader("🕸️ Pro-Style 11-Stroke Skill & Match Profile (Self-Logged Data Only)")
         st.caption(f"Showing {len(df)} total logged sessions. Unmapped stroke dimensions smoothly use your session's average execution baseline rather than artificial constants.")
 
         # Compute each row's true baseline average across available numeric ratings
@@ -1446,11 +1461,13 @@ with tab7:
                 if s_col in h2h_df.columns:
                     s_sub = pd.to_numeric(h2h_df[s_col], errors="coerce")
                     s_all = pd.to_numeric(df[s_col], errors="coerce") if s_col in df.columns else s_sub
-                    if s_sub.notna().any():
+                    if s_sub.notna().any() or s_all.notna().any():
                         h2h_skills.append((
                             s_label,
                             s_sub,
-                            float(s_all.mean()) if s_all.notna().any() else float(s_sub.mean()),
+                            float(s_all.mean()) if s_all.notna().any() else 6.0,
+                            s_color
+                        )) if s_all.notna().any() else float(s_sub.mean()),
                             s_color
                         ))
 
