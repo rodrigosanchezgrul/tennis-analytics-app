@@ -496,37 +496,54 @@ with tab1:
             prog_df["Date_Str"] = prog_df["match_date"].dt.strftime("%Y-%m-%d").fillna("Session")
             prog_df["Session_Label"] = [f"#{i+1} ({d})" for i, d in enumerate(prog_df["Date_Str"])]
 
-            all_skills_cfg = [
-                ("Serve", "serve_rating", "#3498db"),
-                ("Forehand", "fh_rating", "#2ecc71"),
-                ("Backhand", "bh_rating", "#e67e22"),
-                ("Return", "return_rating", "#9b59b6"),
-                ("Volley", "volley_rating", "#1abc9c"),
-                ("Movement", "movement_rating", "#e74c3c"),
-                ("Slice", "slice_rating", "#95a5a6"),
-                ("Mental Focus", "mental_focus", "#f1c40f")
-            ]
+            def get_all_tracked_skills(source_df):
+                # Map display label -> list of possible column names or text patterns in clean_note
+                skill_defs = [
+                    ("Serve Quality", ["serve_rating", "Serve Quality", "serve_quality"], "#3498db"),
+                    ("Return Quality", ["return_quality", "Return Quality", "return_rating"], "#9b59b6"),
+                    ("Forehand Quality", ["fh_rating", "Forehand Quality", "forehand_quality"], "#2ecc71"),
+                    ("Backhand Quality", ["bh_rating", "Backhand Quality", "backhand_quality"], "#e67e22"),
+                    ("Net & Conversion", ["net_quality", "Net & Conversion", "volley_rating", "net_conversion"], "#1abc9c"),
+                    ("Baseline Battle / Focus", ["mental_focus", "Baseline Battle / Focus", "baseline_focus"], "#f1c40f"),
+                    ("Physical Steal / Energy", ["physical_energy", "Physical Steal / Energy", "stamina_rating"], "#e74c3c"),
+                    ("Movement", ["movement_rating", "Movement"], "#fd79a8"),
+                    ("Slice", ["slice_rating", "Slice"], "#95a5a6")
+                ]
+                results = []
+                for label, cols, color in skill_defs:
+                    series = pd.Series(np.nan, index=source_df.index, dtype="float64")
+                    for c in cols:
+                        if c in source_df.columns:
+                            series = series.fillna(pd.to_numeric(source_df[c], errors="coerce"))
+                    # Also parse "Label : X.X" from imported CSV notes (e.g. "Slice : 6.0 | Movement : 6.0")
+                    if "clean_note" in source_df.columns:
+                        short_key = label.split()[0]
+                        extracted = source_df["clean_note"].astype(str).str.extract(
+                            rf"(?:{re.escape(label)}|{re.escape(short_key)})\s*:\s*(\d+(?:\.\d+)?)",
+                            flags=re.IGNORECASE
+                        )[0]
+                        series = series.fillna(pd.to_numeric(extracted, errors="coerce"))
+                    if series.notna().any():
+                        results.append((label, series, color))
+                return results
 
             fig_all_skills = go.Figure()
-            for s_label, s_col, s_color in all_skills_cfg:
-                if s_col in prog_df.columns:
-                    vals = pd.to_numeric(prog_df[s_col], errors="coerce")
-                    if vals.notna().any():
-                        fig_all_skills.add_trace(go.Scatter(
-                            x=prog_df["Session_Label"],
-                            y=vals,
-                            mode="lines+markers",
-                            name=s_label,
-                            connectgaps=True,
-                            line=dict(color=s_color, width=2.5),
-                            marker=dict(size=7)
-                        ))
+            for s_label, s_series, s_color in get_all_tracked_skills(prog_df):
+                fig_all_skills.add_trace(go.Scatter(
+                    x=prog_df["Session_Label"],
+                    y=s_series,
+                    mode="lines+markers",
+                    name=s_label,
+                    connectgaps=True,
+                    line=dict(color=s_color, width=2.5),
+                    marker=dict(size=7)
+                ))
 
             fig_all_skills.update_layout(
                 yaxis=dict(range=[0, 10.5], title="Skill Rating (1-10)"),
                 xaxis_title="Chronological Session",
                 template="plotly_dark",
-                height=430,
+                height=450,
                 hovermode="x unified",
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
             )
@@ -1392,33 +1409,57 @@ with tab7:
             st.markdown("---")
             g_col1, g_col2 = st.columns(2)
 
-            # Graph 1: Radar Chart comparing your performance vs this opponent against your Season Average
-            with g_col1:
-                skill_map = {
-                    "Serve": "serve_rating",
-                    "Mental Focus": "mental_focus",
-                    "Forehand": "fh_rating",
-                    "Backhand": "bh_rating",
-                    "Return": "return_rating",
-                    "Volley": "volley_rating",
-                    "Movement": "movement_rating",
-                    "Slice": "slice_rating"
-                }
-                avail_labels, h2h_vals, season_vals = [], [], []
-                for lbl, col_name in skill_map.items():
-                    if col_name in h2h_df.columns:
-                        v_opp = pd.to_numeric(h2h_df[col_name], errors="coerce").mean()
-                        v_all = pd.to_numeric(df[col_name], errors="coerce").mean()
-                        if pd.notna(v_opp) and pd.notna(v_all):
-                            avail_labels.append(lbl)
-                            h2h_vals.append(round(float(v_opp), 2))
-                            season_vals.append(round(float(v_all), 2))
+            # Graph 1 & Graph 2: ALL Skills Radar + Progression vs this Opponent
+            def extract_h2h_skills(sub_df, full_df):
+                skill_defs = [
+                    ("Serve Quality", ["serve_rating", "Serve Quality", "serve_quality"], "#3498db"),
+                    ("Return Quality", ["return_quality", "Return Quality", "return_rating"], "#9b59b6"),
+                    ("Forehand Quality", ["fh_rating", "Forehand Quality", "forehand_quality"], "#2ecc71"),
+                    ("Backhand Quality", ["bh_rating", "Backhand Quality", "backhand_quality"], "#e67e22"),
+                    ("Net & Conversion", ["net_quality", "Net & Conversion", "volley_rating", "net_conversion"], "#1abc9c"),
+                    ("Baseline Battle / Focus", ["mental_focus", "Baseline Battle / Focus", "baseline_focus"], "#f1c40f"),
+                    ("Physical Steal / Energy", ["physical_energy", "Physical Steal / Energy", "stamina_rating"], "#e74c3c"),
+                    ("Movement", ["movement_rating", "Movement"], "#fd79a8"),
+                    ("Slice", ["slice_rating", "Slice"], "#95a5a6")
+                ]
+                out = []
+                for label, cols, color in skill_defs:
+                    s_sub = pd.Series(np.nan, index=sub_df.index, dtype="float64")
+                    s_all = pd.Series(np.nan, index=full_df.index, dtype="float64")
+                    for c in cols:
+                        if c in sub_df.columns:
+                            s_sub = s_sub.fillna(pd.to_numeric(sub_df[c], errors="coerce"))
+                        if c in full_df.columns:
+                            s_all = s_all.fillna(pd.to_numeric(full_df[c], errors="coerce"))
+                    short_key = label.split()[0]
+                    if "clean_note" in sub_df.columns:
+                        ext_sub = sub_df["clean_note"].astype(str).str.extract(
+                            rf"(?:{re.escape(label)}|{re.escape(short_key)})\s*:\s*(\d+(?:\.\d+)?)",
+                            flags=re.IGNORECASE
+                        )[0]
+                        s_sub = s_sub.fillna(pd.to_numeric(ext_sub, errors="coerce"))
+                    if "clean_note" in full_df.columns:
+                        ext_all = full_df["clean_note"].astype(str).str.extract(
+                            rf"(?:{re.escape(label)}|{re.escape(short_key)})\s*:\s*(\d+(?:\.\d+)?)",
+                            flags=re.IGNORECASE
+                        )[0]
+                        s_all = s_all.fillna(pd.to_numeric(ext_all, errors="coerce"))
+                    if s_sub.notna().any():
+                        out.append((label, s_sub, float(s_all.mean()) if s_all.notna().any() else float(s_sub.mean()), color))
+                return out
 
-                if len(avail_labels) >= 3:
+            h2h_skills = extract_h2h_skills(h2h_df, df)
+
+            with g_col1:
+                if len(h2h_skills) >= 3:
+                    r_labels = [x[0] for x in h2h_skills]
+                    h2h_vals = [round(float(x[1].mean()), 2) for x in h2h_skills]
+                    season_vals = [round(x[2], 2) for x in h2h_skills]
+
                     fig_h2h_radar = go.Figure()
                     fig_h2h_radar.add_trace(go.Scatterpolar(
                         r=season_vals + [season_vals[0]],
-                        theta=avail_labels + [avail_labels[0]],
+                        theta=r_labels + [r_labels[0]],
                         fill="toself",
                         name="Your Season Avg",
                         line=dict(color="#95a5a6", dash="dash"),
@@ -1426,53 +1467,38 @@ with tab7:
                     ))
                     fig_h2h_radar.add_trace(go.Scatterpolar(
                         r=h2h_vals + [h2h_vals[0]],
-                        theta=avail_labels + [avail_labels[0]],
+                        theta=r_labels + [r_labels[0]],
                         fill="toself",
                         name=f"vs. {selected_opp}",
                         line=dict(color="#2ecc71" if h2h_wins >= h2h_losses else "#e74c3c", width=3)
                     ))
                     fig_h2h_radar.update_layout(
                         polar=dict(radialaxis=dict(visible=True, range=[0, 10])),
-                        title=f"Your Skill Profile vs. {selected_opp}",
+                        title=f"All-Skill Radar vs. {selected_opp}",
                         template="plotly_dark",
-                        height=380,
-                        margin=dict(l=40, r=40, t=55, b=35)
+                        height=410,
+                        margin=dict(l=55, r=55, t=55, b=35)
                     )
                     st.plotly_chart(fig_h2h_radar, use_container_width=True)
 
-            # Graph 2: Match-by-Match ALL 8 SKILLS Trend vs this Opponent
             with g_col2:
                 h2h_df["Date Label"] = h2h_df["match_date"].dt.strftime("%Y-%m-%d").fillna("Session")
                 h2h_df["Meeting Label"] = [f"#{i+1} ({d})" for i, d in enumerate(h2h_df["Date Label"])]
 
-                all_skills_h2h = [
-                    ("Serve", "serve_rating", "#3498db"),
-                    ("Forehand", "fh_rating", "#2ecc71"),
-                    ("Backhand", "bh_rating", "#e67e22"),
-                    ("Return", "return_rating", "#9b59b6"),
-                    ("Volley", "volley_rating", "#1abc9c"),
-                    ("Movement", "movement_rating", "#e74c3c"),
-                    ("Slice", "slice_rating", "#95a5a6"),
-                    ("Mental Focus", "mental_focus", "#f1c40f")
-                ]
-
                 fig_h2h_trend = go.Figure()
-                for s_label, s_col, s_color in all_skills_h2h:
-                    if s_col in h2h_df.columns:
-                        s_vals = pd.to_numeric(h2h_df[s_col], errors="coerce")
-                        if s_vals.notna().any():
-                            fig_h2h_trend.add_trace(go.Scatter(
-                                x=h2h_df["Meeting Label"],
-                                y=s_vals,
-                                mode="lines+markers",
-                                name=s_label,
-                                connectgaps=True,
-                                line=dict(color=s_color, width=2.5),
-                                marker=dict(size=9)
-                            ))
+                for s_label, s_series, _, s_color in h2h_skills:
+                    fig_h2h_trend.add_trace(go.Scatter(
+                        x=h2h_df["Meeting Label"],
+                        y=s_series,
+                        mode="lines+markers",
+                        name=s_label,
+                        connectgaps=True,
+                        line=dict(color=s_color, width=2.5),
+                        marker=dict(size=9)
+                    ))
 
                 fig_h2h_trend.update_layout(
-                    title=f"All 8 Skills Progression vs. {selected_opp}",
+                    title=f"All Skills Progression vs. {selected_opp}",
                     yaxis=dict(range=[0, 10.5], title="Rating (1-10)"),
                     xaxis_title="Match vs. Opponent (Click legend to filter)",
                     template="plotly_dark",
