@@ -505,7 +505,7 @@ with tab1:
                     ("Backhand Quality", ["bh_rating", "Backhand Quality", "backhand_quality"], "#e67e22"),
                     ("Net & Conversion", ["net_quality", "Net & Conversion", "volley_rating", "net_conversion"], "#1abc9c"),
                     ("Baseline Battle / Focus", ["mental_focus", "Baseline Battle / Focus", "baseline_focus"], "#f1c40f"),
-                    ("Physical Steal / Energy", ["physical_energy", "Physical Steal / Energy", "stamina_rating"], "#e74c3c"),
+                    ("Physical State / Energy", ["physical_energy", "Physical State / Energy", "movement_rating", "Movement", "stamina_rating"], "#e74c3c"),
                     ("Movement", ["movement_rating", "Movement"], "#fd79a8"),
                     ("Slice", ["slice_rating", "Slice"], "#95a5a6")
                 ]
@@ -1106,7 +1106,7 @@ with tab5:
         r5, r6, r7 = st.columns(3)
         net_rating = r5.slider("Net & Conversion", 1, 10, 6)
         mental_focus = r6.slider("Baseline Battle / Focus", 1, 10, 6)
-        energy_level = r7.slider("Physical Steal / Energy", 1, 10, 6)
+        energy_level = r7.slider("Physical State / Energy", 1, 10, 6)
 
         st.markdown("---")
         st.markdown("**Tactical Root-Cause & Descriptive Notes**")
@@ -1418,7 +1418,7 @@ with tab7:
                     ("Backhand Quality", ["bh_rating", "Backhand Quality", "backhand_quality"], "#e67e22"),
                     ("Net & Conversion", ["net_quality", "Net & Conversion", "volley_rating", "net_conversion"], "#1abc9c"),
                     ("Baseline Battle / Focus", ["mental_focus", "Baseline Battle / Focus", "baseline_focus"], "#f1c40f"),
-                    ("Physical Steal / Energy", ["physical_energy", "Physical Steal / Energy", "stamina_rating"], "#e74c3c"),
+                    ("Physical State / Energy", ["physical_energy", "Physical State / Energy", "movement_rating", "Movement", "stamina_rating"], "#e74c3c"),
                     ("Movement", ["movement_rating", "Movement"], "#fd79a8"),
                     ("Slice", ["slice_rating", "Slice"], "#95a5a6")
                 ]
