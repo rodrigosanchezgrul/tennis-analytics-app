@@ -563,6 +563,14 @@ with tab1:
         scatter_plot_df["Notes"] = df["clean_note"].fillna("") if "clean_note" in df.columns else ""
 
         rng = np.random.default_rng(42)
+        for _lbl, _col in ALL_11_STROKE_MAP.items():
+            if _col in df.columns:
+                scatter_plot_df[_col] = pd.to_numeric(df.loc[scatter_plot_df.index, _col], errors="coerce")
+                scatter_plot_df[_lbl] = scatter_plot_df[_col]
+        if x_axis not in scatter_plot_df.columns and x_axis in ALL_11_STROKE_MAP:
+            scatter_plot_df[x_axis] = pd.to_numeric(df.loc[scatter_plot_df.index, ALL_11_STROKE_MAP[x_axis]], errors="coerce")
+        if y_axis not in scatter_plot_df.columns and y_axis in ALL_11_STROKE_MAP:
+            scatter_plot_df[y_axis] = pd.to_numeric(df.loc[scatter_plot_df.index, ALL_11_STROKE_MAP[y_axis]], errors="coerce")
         scatter_plot_df["x_jit"] = scatter_plot_df[x_axis] + rng.uniform(-0.12, 0.12, size=len(scatter_plot_df))
         scatter_plot_df["y_jit"] = scatter_plot_df[y_axis] + rng.uniform(-0.12, 0.12, size=len(scatter_plot_df))
 
