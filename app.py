@@ -31,6 +31,7 @@ except ImportError:
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="CourtIQ Pro | Tennis Analytics, ML & Video Lab", page_icon="🎾", layout="wide")
 
+st.markdown("""<style>[data-testid="stTooltipIcon"], .stTooltipIcon { display: none !important; }</style>""", unsafe_allow_html=True)
 # --- CUSTOM STYLING (HIGH-CONTRAST READABILITY IN BOTH LIGHT & DARK MODE) ---
 st.markdown("""
 <style>
@@ -532,7 +533,7 @@ with tab1:
             st.plotly_chart(fig_radar, use_container_width=True)
 
         with r_col2:
-            st.subheader("?? Skill Scorecard Breakdown")
+            st.subheader("Skill Scorecard Breakdown")
             sc_rows = []
             for i, lbl in enumerate(axes):
                 s_v, w_v, l_v = season_avg[i], win_avg[i], loss_avg[i]
@@ -551,12 +552,12 @@ with tab1:
             if not valid_sc.empty:
                 best_skill = valid_sc.loc[valid_sc["Season Avg"].idxmax(), "Skill Dimension"]
                 best_val = valid_sc["Season Avg"].max()
-                st.success(f"?? **Highest Rated Stroke:** {best_skill} ({best_val:.1f} / 10)")
+                st.success(f"**Highest Rated Stroke:** {best_skill} ({best_val:.1f} / 10)")
                 valid_gap = valid_sc.dropna(subset=["Win-Loss Gap"])
                 if not valid_gap.empty:
                     sep_skill = valid_gap.loc[valid_gap["Win-Loss Gap"].idxmax(), "Skill Dimension"]
                     sep_val = valid_gap["Win-Loss Gap"].max()
-                    st.warning(f"? **Biggest Win/Loss Separator:** {sep_skill} drops **{sep_val:.1f} pts** when you lose.")
+                    st.warning(f"**Biggest Win/Loss Separator:** {sep_skill} drops **{sep_val:.1f} pts** when you lose.")
         st.markdown("---")
         st.subheader("🔵 Multi-Factor Correlation Scatterplot")
         sc1, sc2, sc3 = st.columns(3)
@@ -599,7 +600,7 @@ with tab1:
 # ==========================================
 
         st.markdown("---")
-        st.subheader("?? All Skills Over Time (Periodic Progression)")
+        st.subheader("All Skills Over Time (Periodic Progression)")
         st.caption("Click any skill in the legend on the right to isolate or compare specific strokes over time.")
         if not df.empty and "match_date" in df.columns:
             prog_df = df.sort_values(by="match_date", ascending=True).copy()
@@ -1182,7 +1183,7 @@ with tab5:
         )
 
         st.markdown("---")
-        st.markdown("**?? Complete 13-Variable Ratings (`0 = Did Not Train Today` ? won't bias your averages)**")
+        st.markdown("**?? Complete 13-Variable Ratings (`0 = Did Not Train Today` won't bias your averages)**")
         def _clean_untrained(val):
             return None if val == 0 else val
 
@@ -1643,5 +1644,5 @@ with tab7:
                     raw_note = str(r.get("clean_note", "")).strip()
                     # Clean out raw timestamp prefixes if present
                     raw_note = re.sub(r"^\(\d{1,2}/\d{1,2}/\d{4}[^)]*\)\s*\\s*", "", raw_note)
-                    st.markdown(f"**{dt_str} ? {r.get('Outcome', '')}**")
+                    st.markdown(f"**{dt_str} {r.get('Outcome', '')}**")
                     st.caption(raw_note if raw_note else "No notes recorded.")
