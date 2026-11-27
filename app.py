@@ -1169,10 +1169,10 @@ with tab5:
         score = c6.text_input("Score or Duration (e.g., 6-4 4-6 10-8 or 60 mins)")
 
         st.markdown("---")
-        st.markdown("**Match Context, Conditioning Load & Opponent Profile**")
+        st.markdown("**Opponent Style & Your Pre-Match Conditioning**")
         ctx1, ctx2, ctx3, ctx4 = st.columns(4)
         opp_style = ctx1.selectbox(
-            "Opponent Style / Drill Theme",
+            "Opponent's Style (or Practice Drill Theme)",
             ["All-Court", "Aggressive Baseliner", "Counterpuncher / Pusher", "Big Server", "Net Rusher / S&V", "Lefty / Unorthodox", "Solo Wall / Footwork"]
         )
         pressure = ctx2.selectbox(
@@ -1180,11 +1180,11 @@ with tab5:
             ["Competitive / Close Sets", "Tiebreak / 3rd Set Decider", "Dominant Control", "Played From Behind", "Routine Practice"]
         )
         physical_state = ctx3.selectbox(
-            "Physical Readiness",
+            "Your Physical Readiness (Pre-Session)",
             ["Fresh & Explosive", "Normal", "Heavy Legs / Fatigued", "Sore / Tight"]
         )
         ankle_weights = ctx4.selectbox(
-            "🏋️ Trained with Ankle Weights?",
+            "Did You Train with Ankle Weights?",
             ["No", "Yes — Light (0.5–1 kg)", "Yes — Heavy (1.5+ kg)"]
         )
 
@@ -1286,19 +1286,19 @@ with tab5:
 
         tc_col1, tc_col2, tc_col3 = st.columns(3)
         weakest_skill = tc_col1.selectbox(
-            "Weakest Skill (Select or Type New)",
+            "Your Weakest Skill Today (Select or Type New)",
             options=all_weakest_options,
             accept_new_options=True
         ) or "None / Balanced Session"
 
         main_problem = tc_col2.selectbox(
-            "Main Problem (Select or Type New)",
+            "Your Main Problem / Root Cause (Select or Type New)",
             options=all_problem_options,
             accept_new_options=True
         ) or "None / Played Solid"
 
         pressure_flow = tc_col3.selectbox(
-            "Match Flow / Pressure (Select or Type New)",
+            "Match Flow / Pressure Situations (Select or Type New)",
             options=all_pressure_options,
             accept_new_options=True
         ) or "Standard Flow"
