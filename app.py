@@ -614,8 +614,7 @@ with tab1:
                 else:
                     s_series = pd.Series(np.nan, index=prog_df.index)
                 # Fill missing historical values with column median (or 5.5 neutral) so every line renders across all 22 sessions
-                fill_val = float(s_series.median()) if s_series.notna().any() else 5.5
-                s_series_filled = s_series.fillna(fill_val)
+                s_series_filled = s_series
                 fig_all_skills.add_trace(go.Scatter(
                     x=prog_df["Session_Label"],
                     y=s_series_filled,
@@ -1183,49 +1182,131 @@ with tab5:
         )
 
         st.markdown("---")
-        st.markdown("**?? Complete Stroke-by-Stroke Ratings (1 to 10)**")
+        st.markdown("**?? Complete 13-Variable Ratings (`0 = Did Not Train Today` ? won't bias your averages)**")
+        def _clean_untrained(val):
+            return None if val == 0 else val
+
         g_r1_c1, g_r1_c2, g_r1_c3, g_r1_c4 = st.columns(4)
-        first_serve = g_r1_c1.slider("1st Serve", 1, 10, 6)
-        second_serve = g_r1_c2.slider("2nd Serve", 1, 10, 6)
-        fh_rating = g_r1_c3.slider("Forehand", 1, 10, 6)
-        bh_rating = g_r1_c4.slider("Backhand", 1, 10, 6)
+        first_serve_raw = g_r1_c1.slider("1st Serve (0=N/A)", 0, 10, 0)
+        second_serve_raw = g_r1_c2.slider("2nd Serve (0=N/A)", 0, 10, 0)
+        fh_rating_raw = g_r1_c3.slider("Forehand (0=N/A)", 0, 10, 0)
+        bh_rating_raw = g_r1_c4.slider("Backhand (0=N/A)", 0, 10, 0)
 
         g_r2_c1, g_r2_c2, g_r2_c3, g_r2_c4 = st.columns(4)
-        fh_return = g_r2_c1.slider("Forehand Return", 1, 10, 6)
-        bh_return = g_r2_c2.slider("Backhand Return", 1, 10, 6)
-        fh_volley = g_r2_c3.slider("Forehand Volley", 1, 10, 6)
-        bh_volley = g_r2_c4.slider("Backhand Volley", 1, 10, 6)
+        fh_return_raw = g_r2_c1.slider("Forehand Return (0=N/A)", 0, 10, 0)
+        bh_return_raw = g_r2_c2.slider("Backhand Return (0=N/A)", 0, 10, 0)
+        fh_volley_raw = g_r2_c3.slider("Forehand Volley (0=N/A)", 0, 10, 0)
+        bh_volley_raw = g_r2_c4.slider("Backhand Volley (0=N/A)", 0, 10, 0)
 
         g_r3_c1, g_r3_c2, g_r3_c3, g_r3_c4 = st.columns(4)
-        overhead_rating = g_r3_c1.slider("Overhead", 1, 10, 6)
-        slice_rating = g_r3_c2.slider("Slice", 1, 10, 6)
-        movement_rating = g_r3_c3.slider("Movement", 1, 10, 6)
-        mental_focus = g_r3_c4.slider("Mental Focus", 1, 10, 6)
+        overhead_rating_raw = g_r3_c1.slider("Overhead (0=N/A)", 0, 10, 0)
+        slice_rating_raw = g_r3_c2.slider("Slice (0=N/A)", 0, 10, 0)
+        movement_rating_raw = g_r3_c3.slider("Movement (0=N/A)", 0, 10, 0)
+        mental_focus_raw = g_r3_c4.slider("Mental Focus (0=N/A)", 0, 10, 0)
+
         g_r4_c1, _, _, _ = st.columns(4)
-        stamina_rating = g_r4_c1.slider("Physical / Stamina", 1, 10, 6)
+        stamina_rating_raw = g_r4_c1.slider("Physical / Stamina (0=N/A)", 0, 10, 0)
+
+        first_serve = _clean_untrained(first_serve_raw)
+        second_serve = _clean_untrained(second_serve_raw)
+        fh_rating = _clean_untrained(fh_rating_raw)
+        bh_rating = _clean_untrained(bh_rating_raw)
+        fh_return = _clean_untrained(fh_return_raw)
+        bh_return = _clean_untrained(bh_return_raw)
+        fh_volley = _clean_untrained(fh_volley_raw)
+        bh_volley = _clean_untrained(bh_volley_raw)
+        overhead_rating = _clean_untrained(overhead_rating_raw)
+        slice_rating = _clean_untrained(slice_rating_raw)
+        movement_rating = _clean_untrained(movement_rating_raw)
+        mental_focus = _clean_untrained(mental_focus_raw)
+        stamina_rating = _clean_untrained(stamina_rating_raw)
+
+        _trained_serves = [v for v in [first_serve, second_serve] if v is not None]
+        serve_rating = round(sum(_trained_serves) / len(_trained_serves), 1) if _trained_serves else None
 
         serve_rating = round((first_serve + second_serve) / 2.0, 1)
 
         st.markdown("---")
-        st.markdown("**Tactical Root-Cause & Descriptive Notes**")
-        t1, t2 = st.columns(2)
-        main_weapon = t1.selectbox(
-            "Primary Weapon / Strength Today",
-            ["Forehand", "Backhand", "First Serve", "Return", "Footwork / Defense", "Net Play", "Mental Composure"]
-        )
-        main_leak = t2.selectbox(
-            "Primary Reason for Losing / Main Leak",
-            ["Unforced errors on Forehand", "Short / weak Backhand", "Low 1st serve % / Double faults", "Slow split-step / Footwork", "Rushing points / Impatience", "Return depth", "None"]
-        )
+        st.markdown("**?? Tactical Root-Cause & Custom Tag Builder**")
+        _hist_problems = set()
+        _hist_pressures = set()
+        if not df.empty:
+            for _col_p in ["main_problem", "tactical_problem", "root_cause"]:
+                if _col_p in df.columns:
+                    _hist_problems.update(df[_col_p].dropna().astype(str).str.strip().tolist())
+            for _col_pr in ["pressure_flow", "match_flow", "pressure_notes"]:
+                if _col_pr in df.columns:
+                    for _entry in df[_col_pr].dropna().astype(str):
+                        for _part in _entry.split("|"):
+                            if _part.strip():
+                                _hist_pressures.add(_part.strip())
+        _hist_problems.discard("")
+        _hist_problems.discard("None")
+        _hist_pressures.discard("")
+        _hist_pressures.discard("None")
 
-        n1, n2 = st.columns(2)
-        what_worked = n1.text_area(
-            "What worked well & tactical patterns that won points?",
-            placeholder="e.g., Heavy crosscourt forehand pushed opponent wide, opening up the down-the-line winner."
+        base_problems = [
+            "None / Played Solid",
+            "Too close to the ball / Poor spacing",
+            "Feet movement / Positioning to hit in the right spot",
+            "Late preparation / Slow unit turn",
+            "Overhitting / Low margin over net",
+            "Tightness / Decelerating swing under pressure",
+            "Poor shot selection / Wrong target",
+            "Low 1st serve % / Double faults",
+            "Contact point too far back",
+            "Balance / Falling off the shot"
+        ]
+        all_problem_options = list(dict.fromkeys(base_problems + sorted(_hist_problems)))
+
+        tc_col1, tc_col2 = st.columns(2)
+        weakest_skill_options = ["None / Balanced Session"] + list(ALL_13_VARIABLE_MAP.keys())
+        weakest_skill = tc_col1.selectbox(
+            "Weakest Skill Today (All 13 Variables)",
+            options=weakest_skill_options
         )
-        what_to_adjust = n2.text_area(
-            "Where did you lose points & what is the #1 drill/focus next time?",
-            placeholder="e.g., Struggled returning kick serves to the backhand; need to drill backhand depth on the wall."
+        selected_problem = tc_col2.selectbox(
+            "Main Problem / Root Cause (Select Existing)",
+            options=all_problem_options
+        )
+        custom_problem = st.text_input(
+            "? Or Create New Root-Cause Tag (saved automatically for future sessions)",
+            placeholder="e.g., Split-step timing late on deep returns, Dropping left shoulder on BH..."
+        )
+        main_problem = custom_problem.strip() if custom_problem.strip() else selected_problem
+
+        st.markdown("---")
+        st.markdown("**?? Match Flow & Pressure Moments (Select Existing or Create New Tag)**")
+        base_pressure_options = [
+            "0-30 / 15-40 Deficit",
+            "Break Point Won",
+            "Break Point Lost",
+            "Deuce / Ad Games",
+            "Serving Out Set / Match",
+            "Tiebreak Pressure",
+            "Momentum Swing / Lost Focus After Error",
+            "Tight / Nervous Arm",
+            "Locked In / Clutch Execution"
+        ]
+        all_pressure_options = list(dict.fromkeys(base_pressure_options + sorted(_hist_pressures)))
+
+        pf_col1, pf_col2 = st.columns([1.2, 1])
+        selected_pressure_tags = pf_col1.multiselect(
+            "Select Match Flow / Pressure Tags",
+            options=all_pressure_options
+        )
+        custom_pressure_tag = pf_col2.text_input(
+            "? Add New Match Flow / Pressure Tag",
+            placeholder="e.g., 4-4 30-30 second serve, Came back from 1-4 down..."
+        )
+        combined_pressure_list = list(selected_pressure_tags)
+        if custom_pressure_tag.strip():
+            combined_pressure_list.append(custom_pressure_tag.strip())
+        pressure_flow = " | ".join(combined_pressure_list) if combined_pressure_list else "Standard Flow"
+
+        tactical_note = st.text_area(
+            "?? Extra Tactical Notes & Adjustments for Next Match",
+            placeholder="What worked, opponent patterns, or specific drills to fix today's main problem..."
         )
 
         submitted = st.form_submit_button("Save Detailed Session", use_container_width=True)
