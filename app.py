@@ -1285,6 +1285,11 @@ with tab5:
         ]
         all_pressure_options = list(dict.fromkeys(base_pressures + sorted(_hist_pressures)))
 
+        _hist_best_clean = set()
+        if not df.empty and "best_skill" in df.columns:
+            _hist_best_clean.update(df["best_skill"].dropna().astype(str).str.strip().tolist())
+        _hist_best_clean -= {"", "None", "nan"}
+        all_best_options = list(dict.fromkeys(["None / Balanced Session"] + list(ALL_13_VARIABLE_MAP.keys()) + sorted(_hist_best_clean)))
         sk_col1, sk_col2 = st.columns(2)
         best_skill = sk_col1.selectbox(
             "Your Strongest / Best Skill Today (Select or Type New)",
