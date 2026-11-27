@@ -393,6 +393,12 @@ def enrich_granular_strokes(dataframe):
         out["bh_volley"] = out["bh_volley"].fillna(net)
 
     out["serve_rating"] = out[["first_serve", "second_serve"]].mean(axis=1)
+    for _r_col in ["what_did_good", "what_to_improve"]:
+        if _r_col not in out.columns:
+            out[_r_col] = ""
+        if "Notes" in out.columns:
+            _extracted = out["Notes"].astype(str).str.extract(rf'"{_r_col}":\s*"([^"]*)"')[0]
+            out[_r_col] = out[_r_col].replace("", np.nan).fillna(_extracted).fillna("")
     return out
 
 if not df.empty:
@@ -1297,10 +1303,16 @@ with tab5:
             accept_new_options=True
         ) or "Standard Flow"
 
-        tactical_note = st.text_area(
-            "Session Notes / Tactical Adjustments",
-            placeholder="Write your session notes, opponent patterns, or drills for next time..."
+        ref_col1, ref_col2 = st.columns(2)
+        what_did_good = ref_col1.text_area(
+            "What Did I Do Good",
+            placeholder="Shots, patterns, mindset, or habits that worked well today..."
         )
+        what_to_improve = ref_col2.text_area(
+            "What Can I Improve",
+            placeholder="Specific adjustments, footwork cues, or drills for next session..."
+        )
+        tactical_note = f"GOOD: {what_did_good.strip()} | IMPROVE: {what_to_improve.strip()}".strip(" |")
 
         submitted = st.form_submit_button("Save Detailed Session", use_container_width=True)
         if submitted:
