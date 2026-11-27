@@ -1227,23 +1227,27 @@ with tab5:
         serve_rating = round(sum([v for v in [first_serve, second_serve] if v is not None]) / len([v for v in [first_serve, second_serve] if v is not None]), 1) if any(v is not None for v in [first_serve, second_serve]) else None
 
         st.markdown("---")
-        st.markdown("**?? Tactical Root-Cause & Custom Tag Builder**")
+        # Gather historical custom entries for Weakest Skill, Main Problem, and Match Flow / Pressure
+        _hist_weakest = set()
         _hist_problems = set()
         _hist_pressures = set()
         if not df.empty:
+            if "weakest_skill" in df.columns:
+                _hist_weakest.update(df["weakest_skill"].dropna().astype(str).str.strip().tolist())
             for _col_p in ["main_problem", "tactical_problem", "root_cause"]:
                 if _col_p in df.columns:
                     _hist_problems.update(df[_col_p].dropna().astype(str).str.strip().tolist())
             for _col_pr in ["pressure_flow", "match_flow", "pressure_notes"]:
                 if _col_pr in df.columns:
-                    for _entry in df[_col_pr].dropna().astype(str):
-                        for _part in _entry.split("|"):
-                            if _part.strip():
-                                _hist_pressures.add(_part.strip())
-        _hist_problems.discard("")
-        _hist_problems.discard("None")
-        _hist_pressures.discard("")
-        _hist_pressures.discard("None")
+                    _hist_pressures.update(df[_col_pr].dropna().astype(str).str.strip().tolist())
+
+        for _s in (_hist_weakest, _hist_problems, _hist_pressures):
+            _s.discard("")
+            _s.discard("None")
+            _s.discard("nan")
+
+        base_weakest = ["None / Balanced Session"] + list(ALL_13_VARIABLE_MAP.keys())
+        all_weakest_options = list(dict.fromkeys(base_weakest + sorted(_hist_weakest)))
 
         base_problems = [
             "None / Played Solid",
@@ -1259,25 +1263,8 @@ with tab5:
         ]
         all_problem_options = list(dict.fromkeys(base_problems + sorted(_hist_problems)))
 
-        tc_col1, tc_col2 = st.columns(2)
-        weakest_skill_options = ["None / Balanced Session"] + list(ALL_13_VARIABLE_MAP.keys())
-        weakest_skill = tc_col1.selectbox(
-            "Weakest Skill Today (All 13 Variables)",
-            options=weakest_skill_options
-        )
-        selected_problem = tc_col2.selectbox(
-            "Main Problem / Root Cause (Select Existing)",
-            options=all_problem_options
-        )
-        custom_problem = st.text_input(
-            "? Or Create New Root-Cause Tag (saved automatically for future sessions)",
-            placeholder="e.g., Split-step timing late on deep returns, Dropping left shoulder on BH..."
-        )
-        main_problem = custom_problem.strip() if custom_problem.strip() else selected_problem
-
-        st.markdown("---")
-        st.markdown("**?? Match Flow & Pressure Moments (Select Existing or Create New Tag)**")
-        base_pressure_options = [
+        base_pressures = [
+            "Standard Flow",
             "0-30 / 15-40 Deficit",
             "Break Point Won",
             "Break Point Lost",
@@ -1288,25 +1275,30 @@ with tab5:
             "Tight / Nervous Arm",
             "Locked In / Clutch Execution"
         ]
-        all_pressure_options = list(dict.fromkeys(base_pressure_options + sorted(_hist_pressures)))
+        all_pressure_options = list(dict.fromkeys(base_pressures + sorted(_hist_pressures)))
 
-        pf_col1, pf_col2 = st.columns([1.2, 1])
-        selected_pressure_tags = pf_col1.multiselect(
-            "Select Match Flow / Pressure Tags",
-            options=all_pressure_options
-        )
-        custom_pressure_tag = pf_col2.text_input(
-            "? Add New Match Flow / Pressure Tag",
-            placeholder="e.g., 4-4 30-30 second serve, Came back from 1-4 down..."
-        )
-        combined_pressure_list = list(selected_pressure_tags)
-        if custom_pressure_tag.strip():
-            combined_pressure_list.append(custom_pressure_tag.strip())
-        pressure_flow = " | ".join(combined_pressure_list) if combined_pressure_list else "Standard Flow"
+        tc_col1, tc_col2, tc_col3 = st.columns(3)
+        weakest_skill = tc_col1.selectbox(
+            "Weakest Skill (Select or Type New)",
+            options=all_weakest_options,
+            accept_new_options=True
+        ) or "None / Balanced Session"
+
+        main_problem = tc_col2.selectbox(
+            "Main Problem (Select or Type New)",
+            options=all_problem_options,
+            accept_new_options=True
+        ) or "None / Played Solid"
+
+        pressure_flow = tc_col3.selectbox(
+            "Match Flow / Pressure (Select or Type New)",
+            options=all_pressure_options,
+            accept_new_options=True
+        ) or "Standard Flow"
 
         tactical_note = st.text_area(
-            "?? Extra Tactical Notes & Adjustments for Next Match",
-            placeholder="What worked, opponent patterns, or specific drills to fix today's main problem..."
+            "Session Notes / Tactical Adjustments",
+            placeholder="Write your session notes, opponent patterns, or drills for next time..."
         )
 
         submitted = st.form_submit_button("Save Detailed Session", use_container_width=True)
