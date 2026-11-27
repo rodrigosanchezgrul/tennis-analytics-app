@@ -393,7 +393,7 @@ def enrich_granular_strokes(dataframe):
         out["bh_volley"] = out["bh_volley"].fillna(net)
 
     out["serve_rating"] = out[["first_serve", "second_serve"]].mean(axis=1)
-    for _r_col in ["what_did_good", "what_to_improve"]:
+    for _r_col in ["best_skill", "what_did_good", "what_to_improve"]:
         if _r_col not in out.columns:
             out[_r_col] = ""
         if "Notes" in out.columns:
@@ -1235,6 +1235,7 @@ with tab5:
 
         st.markdown("---")
         # Gather historical custom entries for Weakest Skill, Main Problem, and Match Flow / Pressure
+        _hist_best = set()
         _hist_weakest = set()
         _hist_problems = set()
         _hist_pressures = set()
@@ -1248,7 +1249,7 @@ with tab5:
                 if _col_pr in df.columns:
                     _hist_pressures.update(df[_col_pr].dropna().astype(str).str.strip().tolist())
 
-        for _s in (_hist_weakest, _hist_problems, _hist_pressures):
+        for _s in (_hist_best, _hist_weakest, _hist_problems, _hist_pressures):
             _s.discard("")
             _s.discard("None")
             _s.discard("nan")
@@ -1284,20 +1285,27 @@ with tab5:
         ]
         all_pressure_options = list(dict.fromkeys(base_pressures + sorted(_hist_pressures)))
 
-        tc_col1, tc_col2, tc_col3 = st.columns(3)
-        weakest_skill = tc_col1.selectbox(
+        sk_col1, sk_col2 = st.columns(2)
+        best_skill = sk_col1.selectbox(
+            "Your Strongest / Best Skill Today (Select or Type New)",
+            options=all_best_options,
+            accept_new_options=True
+        ) or "None / Balanced Session"
+
+        weakest_skill = sk_col2.selectbox(
             "Your Weakest Skill Today (Select or Type New)",
             options=all_weakest_options,
             accept_new_options=True
         ) or "None / Balanced Session"
 
-        main_problem = tc_col2.selectbox(
+        pr_col1, pr_col2 = st.columns(2)
+        main_problem = pr_col1.selectbox(
             "Your Main Problem / Root Cause (Select or Type New)",
             options=all_problem_options,
             accept_new_options=True
         ) or "None / Played Solid"
 
-        pressure_flow = tc_col3.selectbox(
+        pressure_flow = pr_col2.selectbox(
             "Match Flow / Pressure Situations (Select or Type New)",
             options=all_pressure_options,
             accept_new_options=True
