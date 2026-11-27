@@ -1224,7 +1224,7 @@ with tab5:
         _trained_serves = [v for v in [first_serve, second_serve] if v is not None]
         serve_rating = round(sum(_trained_serves) / len(_trained_serves), 1) if _trained_serves else None
 
-        serve_rating = round((first_serve + second_serve) / 2.0, 1)
+        serve_rating = round(sum([v for v in [first_serve, second_serve] if v is not None]) / len([v for v in [first_serve, second_serve] if v is not None]), 1) if any(v is not None for v in [first_serve, second_serve]) else None
 
         st.markdown("---")
         st.markdown("**?? Tactical Root-Cause & Custom Tag Builder**")
